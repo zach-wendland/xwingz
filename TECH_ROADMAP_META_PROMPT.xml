@@ -1,0 +1,89 @@
+<metaPrompt id="xwingz-threejs-rebuild" version="1.0">
+  <title>Three.js Open-Galaxy RPG Technical Architecture &amp; Roadmap</title>
+  <role>
+    You are a senior game/engine architect. Produce a module-by-module technical implementation roadmap for rebuilding this repo into a working Three.js + TypeScript open-galaxy space RPG.
+  </role>
+  <projectContext>
+    <currentState>
+      The existing codebase is a small Python/Pygame procedural galaxy visualizer. The refactor is a full teardown/rebuild into a browser-first 3D game.
+    </currentState>
+    <targetFantasy>
+      “Star Wars open-galaxy game” with space and ground traversal, systemic sandbox depth, and procedural variety inspired by No Man’s Sky, while reflecting themes/archetypes from KOTOR, KOTOR2, the 9 films, and Clone Wars.
+    </targetFantasy>
+    <platforms>
+      Primary: Web (WebGPU first, WebGL2 fallback). Optional: Desktop builds via Electron/Tauri later.
+    </platforms>
+  </projectContext>
+  <nonNegotiableRequirements>
+    <procGen>
+      Use deterministic, layered procedural generation. Every generated asset must be a pure function of (globalSeed, coordinates, archetypeIds, progressionLayerIds). Generation layers: Galaxy/Sector → System → Planet → Region/Tile → POI/Entity → Items/Missions. Implement archetype libraries + parameter ranges + lore constraints. Use noise fields for terrain/climate/interest maps and grammar/graph kits for structures and NPC bodies/loadouts. Rarity gradients and progression-aware “new layers” must avoid repetition while preserving determinism. Reference plan: PROCGEN_PLAN.md.
+    </procGen>
+    <performance>
+      Stream worlds in chunks with strict budgets. Instancing for stars/flora/props/asteroids, LOD/impostors for distance, background generation in Web Workers. Target 60 FPS mid-tier GPU; define measurable budgets (draw calls, triangles, texture VRAM, worker time per tile).
+    </performance>
+    <systemsDepth>
+      Procedural breadth must be paired with systemic depth (economy, AI, quests, faction simulation) and authored story anchors.
+    </systemsDepth>
+  </nonNegotiableRequirements>
+  <technologyStack>
+    <client>
+      <language>TypeScript</language>
+      <build>Vite + PNPM workspaces (monorepo)</build>
+      <render>Three.js R150+ with WebGPU renderer and WebGL2 fallback</render>
+      <sceneComposition>React Three Fiber (optional but recommended)</sceneComposition>
+      <state>Zustand or Redux Toolkit for UI/state; ECS for gameplay</state>
+      <ecs>bitECS (bitecs) or custom lightweight ECS</ecs>
+      <physics>Rapier WASM (preferred) or Cannon-es</physics>
+      <ui>React + CSS/Canvas overlays; diegetic HUD for cockpit</ui>
+      <testing>Vitest (unit), Playwright (integration/visual), lint via ESLint + Prettier</testing>
+    </client>
+    <server optional="true">
+      Multiplayer is optional for v1. If included, use Colyseus (Node) for prototyping, with a path to authoritative Rust/Go services later.
+    </server>
+    <assets>
+      Blender → glTF; textures via KTX2/Basis; audio via WebAudio (FMOD/Wwise only if native builds later).
+    </assets>
+  </technologyStack>
+  <deliverables>
+    <deliverable>1) Target repo layout and module boundaries.</deliverable>
+    <deliverable>2) Engine core loop + ECS design and APIs.</deliverable>
+    <deliverable>3) Procedural-gen subsystem specs (data schemas, seed stack, generators, constraints, tooling).</deliverable>
+    <deliverable>4) Gameplay systems specs (spaceflight, ground traversal, combat, AI, economy, quests, progression, save/persistence).</deliverable>
+    <deliverable>5) Content pipeline and authoring tools.</deliverable>
+    <deliverable>6) Testing/CI/perf validation plan.</deliverable>
+    <deliverable>7) Phased roadmap with dependencies and a vertical-slice MVP.</deliverable>
+  </deliverables>
+  <instructions>
+    <step id="0">Assume full rewrite; do not preserve Python runtime code.</step>
+    <step id="1">Propose a monorepo directory structure (e.g., web/, packages/core, packages/render, packages/procgen, packages/gameplay, packages/ui, tools/).</step>
+    <step id="2">Define the client boot sequence and game loop (init → load assets → seed world → tick ECS → render → input).</step>
+    <step id="3">Design the seed/hash library and deterministic PRNG. Provide function signatures and seed-derivation strategy.</step>
+    <step id="4">Specify each procedural layer: Galaxy/Sector, System, Planet, Tile/Terrain, POI grammars, NPC generator, Item/loot generator, Mission generator. For each: inputs, outputs, cached data, constraints, and streaming triggers.</step>
+    <step id="5">Specify core gameplay ECS systems: Spaceflight (6-DOF, power routing, targeting), transition to orbit/landing, third-person ground controller, combat (ship + ground), AI (BT/GOAP), economy/supply-demand, quest state machine, faction simulation.</step>
+    <step id="6">Define UI layers and UX flows: cockpit HUD, galaxy map, mission log, inventory, dialogue, codex.</step>
+    <step id="7">Define persistence: Store only player deltas + discovered seeds; avoid storing whole worlds. Include versioning/migrations.</step>
+    <step id="8">Define tooling: seed inspector, galaxy heatmap viewer, POI grammar validator, NPC/loot previewers, perf profiler overlay.</step>
+    <step id="9">Create a phased roadmap: Phase A tooling+render core, Phase B procgen+streaming, Phase C spaceflight vertical slice, Phase D ground+missions+economy, Phase E polish+scale. Include risks and mitigation.</step>
+  </instructions>
+  <outputFormat>
+    <format>
+      Return a Markdown document with:
+      - “Repo Layout”
+      - “Core Engine &amp; ECS”
+      - “Procedural Generation Modules”
+      - “Gameplay Modules”
+      - “Content Pipeline”
+      - “Testing &amp; CI”
+      - “Phased Roadmap (Vertical Slice First)”
+    </format>
+    <detailLevel>
+      Be explicit: list module names, key classes/functions, data schemas (JSON examples), and cross-module dependencies. Provide short pseudocode where critical (seed derivation, terrain tile gen, POI grammar expansion).
+    </detailLevel>
+  </outputFormat>
+  <qualityBar>
+    <criterion>Roadmap is implementable by a small team with clear sequencing.</criterion>
+    <criterion>Procedural content stays lore-coherent via constraints.</criterion>
+    <criterion>Performance budgets and streaming are concrete, not hand-wavy.</criterion>
+    <criterion>Vertical slice delivers a playable loop (space → landing → ground mission → rewards).</criterion>
+  </qualityBar>
+</metaPrompt>

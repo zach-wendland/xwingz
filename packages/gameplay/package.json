@@ -1,0 +1,31 @@
+{
+  "name": "@xwingz/gameplay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"no tests yet\"",
+    "lint": "echo \"no lint yet\"",
+    "format": "echo \"no format yet\""
+  },
+  "dependencies": {
+    "@xwingz/core": "file:../core",
+    "@xwingz/procgen": "file:../procgen",
+    "@xwingz/data": "file:../data",
+    "@xwingz/render": "file:../render",
+    "@xwingz/physics": "file:../physics",
+    "three": "^0.161.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.161.0"
+  }
+}

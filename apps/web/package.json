@@ -1,0 +1,23 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xwingz/core": "file:../../packages/core",
+    "@xwingz/render": "file:../../packages/render",
+    "@xwingz/procgen": "file:../../packages/procgen",
+    "@xwingz/gameplay": "file:../../packages/gameplay",
+    "three": "^0.161.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  }
+}

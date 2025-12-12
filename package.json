@@ -1,0 +1,23 @@
+{
+  "name": "xwingz",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "tools/*"
+  ],
+  "scripts": {
+    "dev": "npm --workspace apps/web run dev",
+    "build:packages": "npm --workspace packages/core run build && npm --workspace packages/render run build && npm --workspace packages/data run build && npm --workspace packages/procgen run build && npm --workspace packages/physics run build && npm --workspace packages/gameplay run build && npm --workspace packages/ui run build",
+    "build:apps": "npm --workspace apps/web run build && npm --workspace tools/seed-inspector run build",
+    "build": "npm run build:packages && npm run build:apps",
+    "test": "npm --workspaces run test",
+    "lint": "npm --workspaces run lint",
+    "format": "npm --workspaces run format",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

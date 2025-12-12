@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/render" },
+    { "path": "packages/procgen" },
+    { "path": "packages/gameplay" },
+    { "path": "packages/ui" },
+    { "path": "packages/data" },
+    { "path": "packages/physics" },
+    { "path": "apps/web" }
+  ]
+}
+

@@ -1,4 +1,4 @@
-import { IWorld, addEntity, addComponent, defineQuery, removeEntity } from "bitecs";
+import { IWorld, addEntity, addComponent, defineQuery, removeEntity, hasComponent } from "bitecs";
 import { Euler, Quaternion, Vector3 } from "three";
 import {
   AngularVelocity,
@@ -11,6 +11,7 @@ import {
   Projectile,
   Ship,
   Shield,
+  Team,
   Targetable,
   Targeting,
   Transform,
@@ -23,6 +24,7 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
   addComponent(world, Transform, eid);
   addComponent(world, Velocity, eid);
   addComponent(world, AngularVelocity, eid);
+  addComponent(world, Team, eid);
   addComponent(world, Ship, eid);
   addComponent(world, LaserWeapon, eid);
   addComponent(world, Targeting, eid);
@@ -46,6 +48,8 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
   AngularVelocity.wx[eid] = 0;
   AngularVelocity.wy[eid] = 0;
   AngularVelocity.wz[eid] = 0;
+
+  Team.id[eid] = 0;
 
   Ship.throttle[eid] = 0.6;
   Ship.maxSpeed[eid] = params?.maxSpeed ?? 250;
@@ -75,10 +79,11 @@ const shipQuery = defineQuery([Ship, Transform, Velocity, AngularVelocity]);
 const playerQuery = defineQuery([Ship, PlayerControlled]);
 const weaponQuery = defineQuery([Ship, LaserWeapon, Transform, Velocity]);
 const projectileQuery = defineQuery([Projectile, Transform, Velocity]);
-const targetableQuery = defineQuery([Targetable, Transform]);
+const targetableQuery = defineQuery([Targetable, Transform, Team]);
 const combatTargetQuery = defineQuery([Health, HitRadius, Transform]);
-const targetingQuery = defineQuery([Targeting, PlayerControlled, Transform]);
-const aiQuery = defineQuery([AIControlled, FighterBrain, Ship, LaserWeapon, Transform, Velocity, AngularVelocity]);
+const targetingQuery = defineQuery([Targeting, PlayerControlled, Transform, Team]);
+const aiQuery = defineQuery([AIControlled, FighterBrain, Ship, LaserWeapon, Transform, Velocity, AngularVelocity, Team]);
+const combatantQuery = defineQuery([Health, Transform, Team]);
 
 const tmpQ = new Quaternion();
 const tmpEuler = new Euler();
@@ -229,13 +234,6 @@ export function weaponSystem(world: IWorld, input: SpaceInputState, dt: number) 
 
 export function aiWeaponSystem(world: IWorld, dt: number) {
   const ais = aiQuery(world);
-  const players = playerQuery(world);
-  const player = players[0];
-  if (player === undefined) return;
-
-  const px = Transform.x[player] ?? 0;
-  const py = Transform.y[player] ?? 0;
-  const pz = Transform.z[player] ?? 0;
 
   for (const eid of ais) {
     const cd = LaserWeapon.cooldown[eid] ?? 0.14;
@@ -244,17 +242,26 @@ export function aiWeaponSystem(world: IWorld, dt: number) {
     LaserWeapon.cooldownRemaining[eid] = cdRem;
     if (cdRem > 0) continue;
 
+    const tid = FighterBrain.targetEid[eid] ?? -1;
+    if (tid < 0) continue;
+    if (!hasComponent(world, Transform, tid) || !hasComponent(world, Health, tid) || !hasComponent(world, Team, tid)) continue;
+    if ((Team.id[tid] ?? -1) === (Team.id[eid] ?? -2)) continue;
+
     const sx = Transform.x[eid] ?? 0;
     const sy = Transform.y[eid] ?? 0;
     const sz = Transform.z[eid] ?? 0;
 
-    const dx = px - sx;
-    const dy = py - sy;
-    const dz = pz - sz;
+    const tx = Transform.x[tid] ?? 0;
+    const ty = Transform.y[tid] ?? 0;
+    const tz = Transform.z[tid] ?? 0;
+
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const dz = tz - sz;
     const dist2 = dx * dx + dy * dy + dz * dz;
     if (dist2 > 900 * 900) continue;
 
-    // Fire if player is roughly in front cone.
+    // Fire if target is roughly in front cone.
     tmpQ.set(
       Transform.qx[eid] ?? 0,
       Transform.qy[eid] ?? 0,
@@ -295,8 +302,14 @@ export function projectileSystem(world: IWorld, dt: number) {
     const owner = Projectile.owner[eid] ?? -1;
     const dmg = Projectile.damage[eid] ?? 0;
 
+    const ownerTeam =
+      owner >= 0 && hasComponent(world, Team, owner) ? (Team.id[owner] ?? -1) : -1;
+
     for (const tid of targets) {
       if (tid === owner) continue;
+      if (ownerTeam !== -1 && hasComponent(world, Team, tid) && (Team.id[tid] ?? -2) === ownerTeam) {
+        continue;
+      }
       const dx = (Transform.x[tid] ?? 0) - px;
       const dy = (Transform.y[tid] ?? 0) - py;
       const dz = (Transform.z[tid] ?? 0) - pz;
@@ -332,7 +345,9 @@ export function targetingSystem(world: IWorld, input: SpaceInputState) {
   if (pid === undefined) return;
 
   const targets = targetableQuery(world);
-  if (targets.length === 0) {
+  const myTeam = Team.id[pid] ?? 0;
+  const hostiles = targets.filter((eid) => (Team.id[eid] ?? -1) !== myTeam);
+  if (hostiles.length === 0) {
     Targeting.targetEid[pid] = -1;
     return;
   }
@@ -341,7 +356,7 @@ export function targetingSystem(world: IWorld, input: SpaceInputState) {
   const py = Transform.y[pid] ?? 0;
   const pz = Transform.z[pid] ?? 0;
 
-  const sorted = targets
+  const sorted = hostiles
     .map((eid) => {
       const dx = (Transform.x[eid] ?? 0) - px;
       const dy = (Transform.y[eid] ?? 0) - py;
@@ -367,31 +382,43 @@ export enum AIState {
 
 export function dogfightAISystem(world: IWorld, dt: number) {
   const ais = aiQuery(world);
-  const players = playerQuery(world);
-  const player = players[0];
-  if (player === undefined) return;
-
-  const px = Transform.x[player] ?? 0;
-  const py = Transform.y[player] ?? 0;
-  const pz = Transform.z[player] ?? 0;
-
-  const pvx = Velocity.vx[player] ?? 0;
-  const pvy = Velocity.vy[player] ?? 0;
-  const pvz = Velocity.vz[player] ?? 0;
-  tmpTargetVel.set(pvx, pvy, pvz);
+  const combatants = combatantQuery(world);
 
   for (const eid of ais) {
     let state = FighterBrain.state[eid] ?? AIState.Acquire;
     let stateTime = (FighterBrain.stateTime[eid] ?? 0) + dt;
 
+    const myTeam = Team.id[eid] ?? 1;
+    let tid = FighterBrain.targetEid[eid] ?? -1;
+    if (!isValidTarget(world, eid, tid, myTeam)) {
+      tid = pickNearestHostile(world, eid, myTeam, combatants);
+      FighterBrain.targetEid[eid] = tid;
+      state = tid >= 0 ? AIState.Pursue : AIState.Acquire;
+      stateTime = 0;
+    }
+    if (tid < 0) {
+      FighterBrain.state[eid] = state;
+      FighterBrain.stateTime[eid] = stateTime;
+      continue;
+    }
+
     const sx = Transform.x[eid] ?? 0;
     const sy = Transform.y[eid] ?? 0;
     const sz = Transform.z[eid] ?? 0;
 
-    const dx = px - sx;
-    const dy = py - sy;
-    const dz = pz - sz;
+    const tx = Transform.x[tid] ?? 0;
+    const ty = Transform.y[tid] ?? 0;
+    const tz = Transform.z[tid] ?? 0;
+
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const dz = tz - sz;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    const tvx = hasComponent(world, Velocity, tid) ? (Velocity.vx[tid] ?? 0) : 0;
+    const tvy = hasComponent(world, Velocity, tid) ? (Velocity.vy[tid] ?? 0) : 0;
+    const tvz = hasComponent(world, Velocity, tid) ? (Velocity.vz[tid] ?? 0) : 0;
+    tmpTargetVel.set(tvx, tvy, tvz);
 
     const aggression = FighterBrain.aggression[eid] ?? 0.6;
     const evadeBias = FighterBrain.evadeBias[eid] ?? 0.5;
@@ -406,7 +433,6 @@ export function dogfightAISystem(world: IWorld, dt: number) {
     const forwardConeDot = lerp(0.95, 0.9, aggression);
 
     if (state === AIState.Acquire) {
-      FighterBrain.targetEid[eid] = player;
       state = AIState.Pursue;
       stateTime = 0;
     }
@@ -464,9 +490,9 @@ export function dogfightAISystem(world: IWorld, dt: number) {
       const svx = Velocity.vx[eid] ?? 0;
       const svy = Velocity.vy[eid] ?? 0;
       const svz = Velocity.vz[eid] ?? 0;
-      const rvx = pvx - svx;
-      const rvy = pvy - svy;
-      const rvz = pvz - svz;
+      const rvx = tvx - svx;
+      const rvy = tvy - svy;
+      const rvz = tvz - svz;
       const leadTime =
         computeInterceptTime(dx, dy, dz, rvx, rvy, rvz, projSpeed) ??
         dist / projSpeed;
@@ -540,6 +566,43 @@ export function dogfightAISystem(world: IWorld, dt: number) {
       FighterBrain.stateTime[eid] = 0;
     }
   }
+}
+
+function isValidTarget(world: IWorld, self: number, tid: number, myTeam: number) {
+  if (tid < 0 || tid === self) return false;
+  if (!hasComponent(world, Transform, tid) || !hasComponent(world, Health, tid) || !hasComponent(world, Team, tid)) {
+    return false;
+  }
+  if ((Health.hp[tid] ?? 0) <= 0) return false;
+  if ((Team.id[tid] ?? -1) === myTeam) return false;
+  return true;
+}
+
+function pickNearestHostile(world: IWorld, self: number, myTeam: number, combatants: number[]) {
+  const sx = Transform.x[self] ?? 0;
+  const sy = Transform.y[self] ?? 0;
+  const sz = Transform.z[self] ?? 0;
+
+  let best = -1;
+  let bestD2 = Number.POSITIVE_INFINITY;
+
+  for (const tid of combatants) {
+    if (tid === self) continue;
+    if (!hasComponent(world, Team, tid) || !hasComponent(world, Health, tid) || !hasComponent(world, Transform, tid)) continue;
+    if ((Health.hp[tid] ?? 0) <= 0) continue;
+    if ((Team.id[tid] ?? -1) === myTeam) continue;
+
+    const dx = (Transform.x[tid] ?? 0) - sx;
+    const dy = (Transform.y[tid] ?? 0) - sy;
+    const dz = (Transform.z[tid] ?? 0) - sz;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = tid;
+    }
+  }
+
+  return best;
 }
 
 export function shieldRegenSystem(world: IWorld, dt: number) {

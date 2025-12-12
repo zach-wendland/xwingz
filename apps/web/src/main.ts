@@ -32,6 +32,7 @@ import {
   Shield,
   Health,
   HitRadius,
+  Team,
   LaserWeapon,
   Ship,
   Targetable,
@@ -41,7 +42,7 @@ import {
 } from "@xwingz/gameplay";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { addComponent, addEntity, removeEntity } from "bitecs";
+import { addComponent, addEntity, removeEntity, hasComponent } from "bitecs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("#app not found");
@@ -69,6 +70,23 @@ const overlay = document.querySelector<HTMLDivElement>("#overlay")!;
 
 const globalSeed = 42n;
 const cache = new GalaxyCache({ globalSeed }, { maxSectors: 256 });
+
+const YAVIN_DEFENSE_SYSTEM: SystemDef = {
+  id: "yavin_4",
+  seed: deriveSeed(globalSeed, "story", "yavin_4"),
+  sectorId: "story",
+  sectorCoord: [0, 0, 0],
+  localPos: [0, 0, 0],
+  galaxyPos: [0, 0, 0],
+  archetypeId: "rebel_base",
+  tags: ["jungle", "rebel_base", "massassi_temple"],
+  starClass: "g",
+  planetCount: 1,
+  poiDensity: 1,
+  controllingFaction: "republic",
+  economy: { wealth: 0.55, industry: 0.6, security: 0.85 },
+  storyAnchorChance: 1
+};
 
 type Mode = "map" | "flight";
 let mode: Mode = "map";
@@ -149,16 +167,34 @@ function rebuildGalaxy() {
     `Credits: ${credits} | Tier: ${missionTier}\n` +
     `Center sector: [${centerSector.join(", ")}], radius ${radius}\n` +
     `Systems: ${systems.length}\n` +
-    `WASD/Arrows move sector | Q/E Z-axis | +/- radius | click system | Enter to fly | U upgrades`;
+    `WASD/Arrows move sector | Q/E Z-axis | +/- radius | click system | Enter to fly | 1 Yavin mission | U upgrades`;
 }
 
 // ---- Flight state ----
 const input = createSpaceInput(window);
+type Scenario = "sandbox" | "yavin_defense";
+let scenario: Scenario = "sandbox";
 let currentSystem: SystemDef | null = null;
 let jumpIndex = 0;
 let starfield: THREE.Points | null = null;
 let shipEid: number | null = null;
 let shipMesh: THREE.Object3D | null = null;
+let baseEid: number | null = null;
+let baseMesh: THREE.Object3D | null = null;
+let groundMesh: THREE.Mesh | null = null;
+let treeTrunks: THREE.InstancedMesh | null = null;
+let treeCanopies: THREE.InstancedMesh | null = null;
+type TerrainParams = {
+  a1: number;
+  f1: number;
+  p1: number;
+  a2: number;
+  f2: number;
+  p2: number;
+  yOffset: number;
+};
+let terrainParams: TerrainParams | null = null;
+const tmpMat = new THREE.Matrix4();
 const projectileMeshes = new Map<number, THREE.Mesh>();
 const targetMeshes = new Map<number, THREE.Object3D>();
 let targetEids: number[] = [];
@@ -179,6 +215,19 @@ type MissionRuntime = {
   messageTimer: number;
 };
 let mission: MissionRuntime | null = null;
+
+type YavinDefenseState = {
+  phase: "launch" | "combat" | "success" | "fail";
+  baseHpMax: number;
+  enemiesTotal: number;
+  enemiesKilled: number;
+  rewardCredits: number;
+  message: string;
+  messageTimer: number;
+};
+let yavin: YavinDefenseState | null = null;
+let allyEids: number[] = [];
+const allyMeshes = new Map<number, THREE.Object3D>();
 
 type Upgrades = {
   engine: number;
@@ -466,6 +515,162 @@ function buildLocalStarfield(seed: bigint) {
   scene.add(starfield);
 }
 
+function clearPlanetaryScene() {
+  if (groundMesh) {
+    scene.remove(groundMesh);
+    disposeObject(groundMesh);
+    groundMesh = null;
+  }
+  if (treeTrunks) {
+    scene.remove(treeTrunks);
+    disposeObject(treeTrunks);
+    treeTrunks = null;
+  }
+  if (treeCanopies) {
+    scene.remove(treeCanopies);
+    disposeObject(treeCanopies);
+    treeCanopies = null;
+  }
+  if (baseMesh) {
+    scene.remove(baseMesh);
+    disposeObject(baseMesh);
+    baseMesh = null;
+  }
+  if (baseEid !== null) {
+    removeEntity(game.world, baseEid);
+    baseEid = null;
+  }
+  terrainParams = null;
+  scene.fog = null;
+}
+
+function yavinTerrainHeight(x: number, z: number) {
+  const p = terrainParams;
+  if (!p) return 0;
+  const h1 = Math.sin(x * p.f1 + p.p1) * Math.cos(z * p.f1 + p.p1) * p.a1;
+  const h2 = Math.sin(x * p.f2 + p.p2) * Math.sin(z * p.f2 + p.p2) * p.a2;
+  return h1 + h2 + p.yOffset;
+}
+
+function clampEntityAboveYavinTerrain(eid: number, clearance: number) {
+  if (!terrainParams) return;
+  if (!hasComponent(game.world, Transform, eid)) return;
+
+  const x = Transform.x[eid] ?? 0;
+  const z = Transform.z[eid] ?? 0;
+  const minY = yavinTerrainHeight(x, z) + clearance;
+  const y0 = Transform.y[eid] ?? 0;
+  if (y0 >= minY) return;
+
+  Transform.y[eid] = minY;
+  if (hasComponent(game.world, Velocity, eid) && (Velocity.vy[eid] ?? 0) < 0) {
+    Velocity.vy[eid] = 0;
+  }
+}
+
+function buildGreatTemple() {
+  const group = new THREE.Group();
+
+  const stone = new THREE.MeshStandardMaterial({
+    color: 0x5f646e,
+    metalness: 0.0,
+    roughness: 0.9
+  });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x0f1015, roughness: 1.0 });
+
+  const step1 = new THREE.Mesh(new THREE.BoxGeometry(320, 34, 260), stone);
+  step1.position.y = 17;
+  const step2 = new THREE.Mesh(new THREE.BoxGeometry(260, 30, 210), stone);
+  step2.position.y = 34 + 15;
+  const step3 = new THREE.Mesh(new THREE.BoxGeometry(200, 28, 160), stone);
+  step3.position.y = 34 + 30 + 14;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(150, 24, 110), stone);
+  top.position.y = 34 + 30 + 28 + 12;
+
+  const hangar = new THREE.Mesh(new THREE.BoxGeometry(140, 50, 26), dark);
+  hangar.position.set(0, 22, 130);
+
+  const pad = new THREE.Mesh(new THREE.BoxGeometry(160, 3, 220), new THREE.MeshStandardMaterial({ color: 0x1a1c24, roughness: 0.8 }));
+  pad.position.set(0, 1.5, 250);
+
+  group.add(step1, step2, step3, top, hangar, pad);
+  group.position.set(0, 0, 0);
+  return group;
+}
+
+function buildYavinPlanet(seed: bigint) {
+  const rng = createRng(deriveSeed(seed, "yavin_terrain"));
+  terrainParams = {
+    a1: 34,
+    f1: 0.0012 + rng.range(0, 0.0006),
+    p1: rng.range(0, Math.PI * 2),
+    a2: 18,
+    f2: 0.0021 + rng.range(0, 0.001),
+    p2: rng.range(0, Math.PI * 2),
+    yOffset: -12
+  };
+
+  scene.fog = new THREE.Fog(0x05060b, 220, 5200);
+
+  const size = 9000;
+  const seg = 140;
+  const geo = new THREE.PlaneGeometry(size, size, seg, seg);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getY(i);
+    pos.setZ(i, yavinTerrainHeight(x, z) - (terrainParams?.yOffset ?? 0));
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({ color: 0x1f3a2c, roughness: 1.0 });
+  groundMesh = new THREE.Mesh(geo, mat);
+  groundMesh.rotation.x = -Math.PI / 2;
+  groundMesh.position.y = terrainParams.yOffset;
+  groundMesh.receiveShadow = false;
+  scene.add(groundMesh);
+
+  // Light tree scatter around the temple area.
+  const treeCount = 260;
+  const trunkGeo = new THREE.CylinderGeometry(0.9, 1.3, 14, 6);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 1.0 });
+  treeTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
+
+  const canopyGeo = new THREE.ConeGeometry(6.5, 18, 8);
+  const canopyMat = new THREE.MeshStandardMaterial({ color: 0x1b5a34, roughness: 1.0 });
+  treeCanopies = new THREE.InstancedMesh(canopyGeo, canopyMat, treeCount);
+
+  for (let i = 0; i < treeCount; i++) {
+    let x = rng.range(-1800, 1800);
+    let z = rng.range(-1800, 1800);
+    // keep the runway area clearer
+    if (Math.abs(x) < 260 && z > -200 && z < 520) {
+      x += rng.range(260, 520) * Math.sign(x || 1);
+      z += rng.range(120, 260);
+    }
+
+    const y = yavinTerrainHeight(x, z);
+    const trunkY = y + 7;
+    const canopyY = y + 20;
+    const s = rng.range(0.85, 1.35);
+    const rot = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rng.range(0, Math.PI * 2), 0));
+
+    tmpMat.compose(new THREE.Vector3(x, trunkY, z), rot, new THREE.Vector3(s, s * rng.range(0.9, 1.25), s));
+    treeTrunks.setMatrixAt(i, tmpMat);
+    tmpMat.compose(new THREE.Vector3(x, canopyY, z), rot, new THREE.Vector3(s, s, s));
+    treeCanopies.setMatrixAt(i, tmpMat);
+  }
+  treeTrunks.instanceMatrix.needsUpdate = true;
+  treeCanopies.instanceMatrix.needsUpdate = true;
+  scene.add(treeTrunks);
+  scene.add(treeCanopies);
+
+  baseMesh = buildGreatTemple();
+  baseMesh.position.y = yavinTerrainHeight(0, 0);
+  scene.add(baseMesh);
+}
+
 function buildShipMesh() {
   const group = new THREE.Group();
 
@@ -521,6 +726,18 @@ function buildEnemyMesh(id: string) {
   return group;
 }
 
+function buildAllyMesh(slot = 0) {
+  const group = buildShipMesh();
+  const tint = slot % 3 === 0 ? 0x9bb7ff : slot % 3 === 1 ? 0xbfffd0 : 0xffd29b;
+  group.traverse((c) => {
+    const mesh = c as THREE.Mesh;
+    if (!mesh.material) return;
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    mat.color.lerp(new THREE.Color(tint), 0.12);
+  });
+  return group;
+}
+
 function spawnEnemyFighters(system: SystemDef, encounterKey = "v0") {
   // clear existing AI targets
   for (const eid of targetEids) {
@@ -549,6 +766,7 @@ function spawnEnemyFighters(system: SystemDef, encounterKey = "v0") {
     addComponent(game.world, Transform, eid);
     addComponent(game.world, Velocity, eid);
     addComponent(game.world, AngularVelocity, eid);
+    addComponent(game.world, Team, eid);
     addComponent(game.world, Ship, eid);
     addComponent(game.world, LaserWeapon, eid);
     addComponent(game.world, Targetable, eid);
@@ -573,6 +791,8 @@ function spawnEnemyFighters(system: SystemDef, encounterKey = "v0") {
     AngularVelocity.wx[eid] = 0;
     AngularVelocity.wy[eid] = 0;
     AngularVelocity.wz[eid] = 0;
+
+    Team.id[eid] = 1;
 
     Ship.throttle[eid] = rng.range(0.6, 0.9);
     Ship.maxSpeed[eid] = archetype.maxSpeed;
@@ -607,6 +827,41 @@ function spawnEnemyFighters(system: SystemDef, encounterKey = "v0") {
   }
 }
 
+function clearAllies() {
+  for (const eid of allyEids) {
+    if (hasComponent(game.world, Transform, eid)) removeEntity(game.world, eid);
+  }
+  allyEids = [];
+
+  for (const mesh of allyMeshes.values()) {
+    scene.remove(mesh);
+    disposeObject(mesh);
+  }
+  allyMeshes.clear();
+}
+
+function syncAllies() {
+  for (let i = allyEids.length - 1; i >= 0; i--) {
+    const eid = allyEids[i]!;
+    if (!hasComponent(game.world, Transform, eid) || !hasComponent(game.world, Health, eid) || (Health.hp[eid] ?? 0) <= 0) {
+      const mesh = allyMeshes.get(eid);
+      if (mesh) {
+        spawnExplosion(tmpExplosionPos.copy(mesh.position), 0x66aaff);
+        scene.remove(mesh);
+        disposeObject(mesh);
+        allyMeshes.delete(eid);
+      }
+      allyEids.splice(i, 1);
+      continue;
+    }
+
+    const mesh = allyMeshes.get(eid);
+    if (!mesh) continue;
+    mesh.position.set(Transform.x[eid] ?? 0, Transform.y[eid] ?? 0, Transform.z[eid] ?? 0);
+    mesh.quaternion.set(Transform.qx[eid] ?? 0, Transform.qy[eid] ?? 0, Transform.qz[eid] ?? 0, Transform.qw[eid] ?? 1);
+  }
+}
+
 function syncTargets() {
   const aliveTargets = getTargetables(game.world);
   const aliveSet = new Set(aliveTargets);
@@ -621,20 +876,35 @@ function syncTargets() {
     targetMeshes.delete(eid);
   }
 
-  if (killed > 0 && mission && !mission.completed && !playerDead) {
-    mission.kills += killed;
-    credits += killed * 5;
+  if (killed > 0 && !playerDead) {
+    if (scenario === "sandbox" && mission && !mission.completed) {
+      mission.kills += killed;
+      credits += killed * 5;
 
-    if (mission.kills >= mission.def.goalKills) {
-      mission.kills = mission.def.goalKills;
-      mission.completed = true;
-      credits += mission.def.rewardCredits;
-      missionTier += 1;
-      mission.message = `MISSION COMPLETE  +${mission.def.rewardCredits} CR`;
-      mission.messageTimer = 4;
+      if (mission.kills >= mission.def.goalKills) {
+        mission.kills = mission.def.goalKills;
+        mission.completed = true;
+        credits += mission.def.rewardCredits;
+        missionTier += 1;
+        mission.message = `MISSION COMPLETE  +${mission.def.rewardCredits} CR`;
+        mission.messageTimer = 4;
+      }
+
+      scheduleSave();
     }
 
-    scheduleSave();
+    if (scenario === "yavin_defense" && yavin && yavin.phase === "combat") {
+      yavin.enemiesKilled += killed;
+      credits += killed * 10;
+      if (yavin.enemiesKilled >= yavin.enemiesTotal && aliveTargets.length === 0) {
+        yavin.phase = "success";
+        credits += yavin.rewardCredits;
+        yavin.message = `VICTORY  +${yavin.rewardCredits} CR`;
+        yavin.messageTimer = 6;
+        missionTier += 1;
+      }
+      scheduleSave();
+    }
   }
 
   targetEids = aliveTargets;
@@ -807,17 +1077,21 @@ function setupFlightHud() {
   };
 }
 
-function enterFlightMode(system: SystemDef) {
+function enterFlightMode(system: SystemDef, nextScenario: Scenario = "sandbox") {
   if (upgradesOpen) closeUpgrades();
   mode = "flight";
+  scenario = nextScenario;
   currentSystem = system;
   jumpIndex = 0;
   playerDead = false;
   respawnTimer = 0;
   mission = null;
+  yavin = null;
 
   controls.enabled = false;
   resetExplosions();
+  clearAllies();
+  clearPlanetaryScene();
   scene.clear();
   scene.add(new THREE.AmbientLight(0xffffff, 0.9));
   const sun = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -825,14 +1099,22 @@ function enterFlightMode(system: SystemDef) {
   scene.add(sun);
   scene.add(new THREE.PointLight(0x88aaff, 0.6, 0, 2));
 
-  buildLocalStarfield(system.seed);
+  if (scenario === "yavin_defense") {
+    buildYavinPlanet(system.seed);
+  } else {
+    buildLocalStarfield(system.seed);
+  }
 
   // Clear any leftover projectiles from prior flights.
   clearProjectiles();
 
   respawnPlayer();
 
-  startMission(system);
+  if (scenario === "yavin_defense") {
+    startYavinDefense(system);
+  } else {
+    startMission(system);
+  }
 
   camera.position.set(0, 6, 20);
   camera.lookAt(0, 0, -50);
@@ -890,12 +1172,241 @@ function spawnMissionWave(system: SystemDef) {
   spawnEnemyFighters(system, key);
 }
 
+function startYavinDefense(system: SystemDef) {
+  mission = null;
+  yavin = {
+    phase: "launch",
+    baseHpMax: 1200,
+    enemiesTotal: 10,
+    enemiesKilled: 0,
+    rewardCredits: 1500,
+    message: "RED SQUADRON: LAUNCH! DEFEND THE GREAT TEMPLE.",
+    messageTimer: 6
+  };
+
+  // Clean slate.
+  clearAllies();
+  // Clear enemies (reuse existing function behavior).
+  for (const eid of targetEids) removeEntity(game.world, eid);
+  targetEids = [];
+  for (const mesh of targetMeshes.values()) {
+    scene.remove(mesh);
+    disposeObject(mesh);
+  }
+  targetMeshes.clear();
+
+  // Base entity (the Great Temple).
+  if (baseMesh) {
+    const eid = addEntity(game.world);
+    addComponent(game.world, Transform, eid);
+    addComponent(game.world, Team, eid);
+    addComponent(game.world, Health, eid);
+    addComponent(game.world, HitRadius, eid);
+
+    baseEid = eid;
+    Team.id[eid] = 0;
+    Health.hp[eid] = yavin.baseHpMax;
+    Health.maxHp[eid] = yavin.baseHpMax;
+    HitRadius.r[eid] = 140;
+
+    // Aim point near the temple core.
+    Transform.x[eid] = baseMesh.position.x;
+    Transform.y[eid] = baseMesh.position.y + 55;
+    Transform.z[eid] = baseMesh.position.z + 30;
+    Transform.qx[eid] = 0;
+    Transform.qy[eid] = 0;
+    Transform.qz[eid] = 0;
+    Transform.qw[eid] = 1;
+  }
+
+  // Place player on the hangar pad/runway.
+  if (shipEid !== null && terrainParams) {
+    const x = 0;
+    const z = 340;
+    const y = yavinTerrainHeight(x, z) + 7;
+    Transform.x[shipEid] = x;
+    Transform.y[shipEid] = y;
+    Transform.z[shipEid] = z;
+    // Face +Z (out along the runway).
+    Transform.qx[shipEid] = 0;
+    Transform.qy[shipEid] = 1;
+    Transform.qz[shipEid] = 0;
+    Transform.qw[shipEid] = 0;
+    Velocity.vx[shipEid] = 0;
+    Velocity.vy[shipEid] = 0;
+    Velocity.vz[shipEid] = 0;
+    Ship.throttle[shipEid] = 0.35;
+  }
+
+  // Wingmen (3) in loose formation.
+  spawnWingman(0, -22, 320);
+  spawnWingman(1, 22, 320);
+  spawnWingman(2, 0, 300);
+
+  // 10 TIE/LN raid incoming.
+  spawnYavinTieRaid(system.seed, yavin.enemiesTotal);
+
+  yavin.phase = "combat";
+  scheduleSave();
+}
+
+function spawnWingman(slot: number, x: number, z: number) {
+  if (!terrainParams) return;
+
+  const archetype = getFighterArchetype("xwing_player");
+  const eid = addEntity(game.world);
+  addComponent(game.world, Transform, eid);
+  addComponent(game.world, Velocity, eid);
+  addComponent(game.world, AngularVelocity, eid);
+  addComponent(game.world, Team, eid);
+  addComponent(game.world, Ship, eid);
+  addComponent(game.world, LaserWeapon, eid);
+  addComponent(game.world, Health, eid);
+  addComponent(game.world, HitRadius, eid);
+  addComponent(game.world, Shield, eid);
+  addComponent(game.world, FighterBrain, eid);
+  addComponent(game.world, AIControlled, eid);
+
+  const y = yavinTerrainHeight(x, z) + 7;
+  Transform.x[eid] = x;
+  Transform.y[eid] = y;
+  Transform.z[eid] = z;
+  Transform.qx[eid] = 0;
+  Transform.qy[eid] = 1;
+  Transform.qz[eid] = 0;
+  Transform.qw[eid] = 0;
+
+  Velocity.vx[eid] = 0;
+  Velocity.vy[eid] = 0;
+  Velocity.vz[eid] = 0;
+
+  AngularVelocity.wx[eid] = 0;
+  AngularVelocity.wy[eid] = 0;
+  AngularVelocity.wz[eid] = 0;
+
+  Team.id[eid] = 0;
+
+  Ship.throttle[eid] = 0.45;
+  Ship.maxSpeed[eid] = archetype.maxSpeed * 0.98;
+  Ship.accel[eid] = archetype.accel * 0.95;
+  Ship.turnRate[eid] = archetype.turnRate * 0.95;
+
+  LaserWeapon.cooldown[eid] = archetype.weaponCooldown;
+  LaserWeapon.cooldownRemaining[eid] = 0;
+  LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
+  LaserWeapon.damage[eid] = archetype.damage;
+
+  Health.hp[eid] = archetype.hp * 0.9;
+  Health.maxHp[eid] = archetype.hp * 0.9;
+  HitRadius.r[eid] = archetype.hitRadius;
+
+  Shield.maxSp[eid] = 45;
+  Shield.sp[eid] = 45;
+  Shield.regenRate[eid] = 5;
+  Shield.lastHit[eid] = 999;
+
+  FighterBrain.state[eid] = 0;
+  FighterBrain.stateTime[eid] = 0;
+  FighterBrain.aggression[eid] = 0.7;
+  FighterBrain.evadeBias[eid] = 0.45;
+  FighterBrain.targetEid[eid] = -1;
+
+  const mesh = buildAllyMesh(slot);
+  mesh.position.set(x, y, z);
+  mesh.scale.setScalar(2.45);
+  scene.add(mesh);
+  allyMeshes.set(eid, mesh);
+  allyEids.push(eid);
+}
+
+function spawnYavinTieRaid(seed: bigint, count: number) {
+  const rng = createRng(deriveSeed(seed, "yavin_defense", "ties_v0"));
+  const baseTarget = baseEid;
+
+  for (let i = 0; i < count; i++) {
+    const archetype = getFighterArchetype("tie_ln");
+    const angle = rng.range(-0.4, 0.4);
+    const x = rng.range(-600, 600);
+    const z = -2400 + rng.range(-400, 300);
+    const y = 220 + rng.range(0, 260);
+
+    const eid = addEntity(game.world);
+    addComponent(game.world, Transform, eid);
+    addComponent(game.world, Velocity, eid);
+    addComponent(game.world, AngularVelocity, eid);
+    addComponent(game.world, Team, eid);
+    addComponent(game.world, Ship, eid);
+    addComponent(game.world, LaserWeapon, eid);
+    addComponent(game.world, Targetable, eid);
+    addComponent(game.world, Health, eid);
+    addComponent(game.world, HitRadius, eid);
+    addComponent(game.world, Shield, eid);
+    addComponent(game.world, FighterBrain, eid);
+    addComponent(game.world, AIControlled, eid);
+
+    Transform.x[eid] = x;
+    Transform.y[eid] = y;
+    Transform.z[eid] = z;
+    // Slightly banked toward the base.
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI + angle, 0));
+    Transform.qx[eid] = q.x;
+    Transform.qy[eid] = q.y;
+    Transform.qz[eid] = q.z;
+    Transform.qw[eid] = q.w;
+
+    Velocity.vx[eid] = 0;
+    Velocity.vy[eid] = 0;
+    Velocity.vz[eid] = 0;
+
+    AngularVelocity.wx[eid] = 0;
+    AngularVelocity.wy[eid] = 0;
+    AngularVelocity.wz[eid] = 0;
+
+    Team.id[eid] = 1;
+
+    Ship.throttle[eid] = rng.range(0.7, 0.95);
+    Ship.maxSpeed[eid] = archetype.maxSpeed;
+    Ship.accel[eid] = archetype.accel;
+    Ship.turnRate[eid] = archetype.turnRate;
+
+    LaserWeapon.cooldown[eid] = archetype.weaponCooldown;
+    LaserWeapon.cooldownRemaining[eid] = rng.range(0, archetype.weaponCooldown);
+    LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
+    LaserWeapon.damage[eid] = archetype.damage;
+
+    Health.hp[eid] = archetype.hp;
+    Health.maxHp[eid] = archetype.hp;
+    HitRadius.r[eid] = archetype.hitRadius;
+
+    Shield.maxSp[eid] = 10;
+    Shield.sp[eid] = 10;
+    Shield.regenRate[eid] = 3;
+    Shield.lastHit[eid] = 999;
+
+    FighterBrain.state[eid] = 0;
+    FighterBrain.stateTime[eid] = 0;
+    FighterBrain.aggression[eid] = 0.8;
+    FighterBrain.evadeBias[eid] = 0.35;
+    // A subset of TIEs will prioritize the base.
+    FighterBrain.targetEid[eid] = baseTarget !== null && i < Math.ceil(count * 0.4) ? baseTarget : -1;
+
+    const mesh = buildEnemyMesh("tie_ln");
+    mesh.position.set(x, y, z);
+    scene.add(mesh);
+    targetMeshes.set(eid, mesh);
+    targetEids.push(eid);
+  }
+}
+
 function enterMapMode() {
   if (upgradesOpen) closeUpgrades();
   mode = "map";
   controls.enabled = true;
   flightHud = null;
   resetExplosions();
+  yavin = null;
+  clearAllies();
+  clearPlanetaryScene();
 
   // Remove flight-only ECS entities and meshes.
   clearProjectiles();
@@ -954,6 +1465,12 @@ function updateFlightHud(dtSeconds = 1 / 60) {
   const els = flightHud;
   if (!els) return;
 
+  const yavinState = scenario === "yavin_defense" ? yavin : null;
+  const baseHp =
+    yavinState && baseEid !== null && hasComponent(game.world, Health, baseEid)
+      ? Health.hp[baseEid] ?? 0
+      : 0;
+
   if (!shipEid) {
     els.speed.textContent = "0";
     els.throttle.textContent = "0%";
@@ -964,9 +1481,24 @@ function updateFlightHud(dtSeconds = 1 / 60) {
       els.faction.textContent = currentSystem.controllingFaction;
     }
     els.credits.textContent = credits.toString();
-    els.mission.textContent = mission ? mission.def.title : "";
+    if (yavinState) {
+      if (yavinState.messageTimer > 0) {
+        els.mission.textContent = yavinState.message;
+      } else if (yavinState.phase === "success") {
+        els.mission.textContent = "VICTORY - PRESS M FOR MAP OR H TO RESTART";
+      } else if (yavinState.phase === "fail") {
+        els.mission.textContent = "MISSION FAILED - PRESS H TO RESTART";
+      } else {
+        els.mission.textContent = `DEFEND GREAT TEMPLE: ${yavinState.enemiesKilled}/${yavinState.enemiesTotal}  BASE ${Math.max(0, baseHp).toFixed(0)}/${yavinState.baseHpMax}`;
+      }
+    } else {
+      els.mission.textContent = mission ? mission.def.title : "";
+    }
     els.target.textContent = playerDead ? "SHIP DESTROYED" : "NO TARGET";
-    els.lock.textContent = playerDead ? "RESPAWNING..." : "LOCK 0%";
+    els.lock.textContent =
+      playerDead && yavinState ? "PRESS H TO RESTART" :
+      playerDead ? "RESPAWNING..." :
+      "LOCK 0%";
     els.bracket.classList.add("hidden");
     els.lead.classList.add("hidden");
     return;
@@ -990,7 +1522,17 @@ function updateFlightHud(dtSeconds = 1 / 60) {
   }
   els.credits.textContent = credits.toString();
 
-  if (mission) {
+  if (yavinState) {
+    if (yavinState.messageTimer > 0) {
+      els.mission.textContent = yavinState.message;
+    } else if (yavinState.phase === "success") {
+      els.mission.textContent = "VICTORY - PRESS M FOR MAP OR H TO RESTART";
+    } else if (yavinState.phase === "fail") {
+      els.mission.textContent = "MISSION FAILED - PRESS H TO RESTART";
+    } else {
+      els.mission.textContent = `DEFEND GREAT TEMPLE: ${yavinState.enemiesKilled}/${yavinState.enemiesTotal}  BASE ${Math.max(0, baseHp).toFixed(0)}/${yavinState.baseHpMax}`;
+    }
+  } else if (mission) {
     if (mission.messageTimer > 0) {
       els.mission.textContent = mission.message;
     } else if (mission.completed) {
@@ -1161,6 +1703,9 @@ window.addEventListener("keydown", (e) => {
       radius = Math.max(0, radius - 1);
       rebuildGalaxy();
       break;
+    case "1":
+      enterFlightMode(YAVIN_DEFENSE_SYSTEM, "yavin_defense");
+      break;
     case "Enter":
       if (selectedSystem) enterFlightMode(selectedSystem);
       break;
@@ -1212,9 +1757,8 @@ window.addEventListener("click", (ev) => {
 });
 
 // ---- Main tick ----
-enterMapMode();
-
 const game = createGame({ globalSeed });
+enterMapMode();
 game.setTick((dt) => {
   if (mode === "map") {
     controls.update();
@@ -1229,9 +1773,25 @@ game.setTick((dt) => {
     return;
   }
 
+  if (
+    scenario === "yavin_defense" &&
+    currentSystem &&
+    yavin &&
+    (yavin.phase === "success" || yavin.phase === "fail") &&
+    input.state.hyperspace
+  ) {
+    enterFlightMode(currentSystem, "yavin_defense");
+    return;
+  }
+
+  if (scenario === "yavin_defense" && yavin && yavin.phase === "combat" && input.state.hyperspace) {
+    yavin.message = "HYPERSPACE DISABLED - COMPLETE OBJECTIVE";
+    yavin.messageTimer = 2;
+  }
+
   if (playerDead) {
     respawnTimer += dt;
-    if (respawnTimer >= RESPAWN_DELAY && currentSystem) {
+    if (scenario !== "yavin_defense" && respawnTimer >= RESPAWN_DELAY && currentSystem) {
       // Clean slate on respawn for now.
       clearProjectiles();
       respawnPlayer();
@@ -1261,8 +1821,36 @@ game.setTick((dt) => {
   projectileSystem(game.world, dt);
   shieldRegenSystem(game.world, dt);
 
+  if (scenario === "yavin_defense" && yavin && yavin.phase === "combat") {
+    const baseAlive =
+      baseEid !== null &&
+      hasComponent(game.world, Health, baseEid) &&
+      (Health.hp[baseEid] ?? 0) > 0;
+    if (!baseAlive) {
+      yavin.phase = "fail";
+      yavin.message = "MISSION FAILED - GREAT TEMPLE DESTROYED";
+      yavin.messageTimer = 8;
+      if (baseMesh) {
+        spawnExplosion(
+          tmpExplosionPos.set(baseMesh.position.x, baseMesh.position.y + 45, baseMesh.position.z),
+          0xff4444
+        );
+        scene.remove(baseMesh);
+        disposeObject(baseMesh);
+        baseMesh = null;
+      }
+      scheduleSave();
+    }
+  }
+
   const player = getPlayerShip(game.world);
   if (player === null) {
+    if (scenario === "yavin_defense" && yavin && yavin.phase === "combat") {
+      yavin.phase = "fail";
+      yavin.message = "MISSION FAILED - YOU WERE SHOT DOWN";
+      yavin.messageTimer = 8;
+      scheduleSave();
+    }
     playerDead = true;
     respawnTimer = 0;
     clearProjectiles();
@@ -1279,6 +1867,12 @@ game.setTick((dt) => {
     return;
   }
 
+  if (scenario === "yavin_defense") {
+    clampEntityAboveYavinTerrain(player, 6);
+    for (const eid of allyEids) clampEntityAboveYavinTerrain(eid, 6);
+    for (const eid of targetEids) clampEntityAboveYavinTerrain(eid, 6);
+  }
+
   if (player !== null && shipMesh) {
     shipMesh.position.set(Transform.x[player], Transform.y[player], Transform.z[player]);
     shipMesh.quaternion.set(Transform.qx[player], Transform.qy[player], Transform.qz[player], Transform.qw[player]);
@@ -1292,15 +1886,21 @@ game.setTick((dt) => {
   }
 
   syncTargets();
+  if (scenario === "yavin_defense" && yavin) {
+    syncAllies();
+  }
   if (mission && currentSystem && !mission.completed && mission.kills < mission.def.goalKills && targetEids.length === 0) {
     spawnMissionWave(currentSystem);
   }
   syncProjectiles();
 
-  if (input.state.hyperspace) hyperspaceJump();
+  if (scenario !== "yavin_defense" && input.state.hyperspace) hyperspaceJump();
 
   if (mission && mission.messageTimer > 0) {
     mission.messageTimer = Math.max(0, mission.messageTimer - dt);
+  }
+  if (yavin && yavin.messageTimer > 0) {
+    yavin.messageTimer = Math.max(0, yavin.messageTimer - dt);
   }
 
   updateFlightHud(dt);

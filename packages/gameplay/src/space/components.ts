@@ -22,6 +22,10 @@ export const AngularVelocity = defineComponent({
   wz: Types.f32
 });
 
+export const Team = defineComponent({
+  id: Types.i32 // 0 = friendly, 1 = enemy (v0)
+});
+
 export const Ship = defineComponent({
   throttle: Types.f32,   // 0..1
   maxSpeed: Types.f32,   // units/sec

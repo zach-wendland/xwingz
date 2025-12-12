@@ -38,6 +38,10 @@ canvas {
   text-shadow: 0 0 6px rgba(124, 255, 124, 0.35);
 }
 
+.hidden {
+  display: none;
+}
+
 .hud-reticle {
   position: absolute;
   left: 50%;
@@ -62,6 +66,28 @@ canvas {
 .hud-target {
   font-size: 14px;
   font-weight: 600;
+}
+
+.hud-lock {
+  font-size: 11px;
+  margin-top: 4px;
+  opacity: 0.9;
+}
+
+.hud-bracket {
+  position: absolute;
+  width: 84px;
+  height: 84px;
+  border: 2px solid rgba(124, 255, 124, 0.85);
+  transform: translate(-50%, -50%);
+}
+
+.hud-lead {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(255, 120, 120, 0.95);
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
 .reticle-circle {

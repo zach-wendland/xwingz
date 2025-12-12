@@ -5,21 +5,31 @@ import {
   GalaxyCache,
   createRng,
   deriveSeed,
+  getEncounter,
+  getFighterArchetype,
   type Vec3i,
   type SystemDef
 } from "@xwingz/procgen";
 import {
+  AIControlled,
+  AngularVelocity,
   createSpaceInput,
+  dogfightAISystem,
   getPlayerShip,
   getProjectiles,
   getTargetables,
+  aiWeaponSystem,
   spaceflightSystem,
   spawnPlayerShip,
   targetingSystem,
   weaponSystem,
   projectileSystem,
+  shieldRegenSystem,
+  FighterBrain,
+  Shield,
   Health,
   HitRadius,
+  LaserWeapon,
   Ship,
   Targetable,
   Targeting,
@@ -146,8 +156,8 @@ let shipMesh: THREE.Object3D | null = null;
 const projectileMeshes = new Map<number, THREE.Mesh>();
 const targetMeshes = new Map<number, THREE.Object3D>();
 let targetEids: number[] = [];
-const targetOrbits = new Map<number, { radius: number; speed: number; phase: number; height: number }>();
-let flightTimeSec = 0;
+let lockValue = 0;
+let lockTargetEid = -1;
 const boltForward = new THREE.Vector3(0, 0, 1);
 
 function buildLocalStarfield(seed: bigint) {
@@ -201,8 +211,37 @@ function buildShipMesh() {
   return group;
 }
 
-function spawnTrainingDrones(seed: bigint) {
-  // remove previous drones
+function buildEnemyMesh(id: string) {
+  if (id === "tie_ln") {
+    const group = new THREE.Group();
+    const cockpit = new THREE.Mesh(
+      new THREE.SphereGeometry(2.4, 10, 10),
+      new THREE.MeshStandardMaterial({ color: 0x2b2f3a, metalness: 0.25, roughness: 0.6 })
+    );
+    group.add(cockpit);
+    const panelGeo = new THREE.BoxGeometry(0.6, 6.5, 6.5);
+    const panelMat = new THREE.MeshStandardMaterial({ color: 0x1a1c23, metalness: 0.2, roughness: 0.7 });
+    const left = new THREE.Mesh(panelGeo, panelMat);
+    left.position.x = -4.2;
+    const right = new THREE.Mesh(panelGeo, panelMat);
+    right.position.x = 4.2;
+    group.add(left, right);
+    return group;
+  }
+
+  const group = buildShipMesh();
+  group.traverse((c) => {
+    const mesh = c as THREE.Mesh;
+    if (mesh.material) {
+      (mesh.material as THREE.MeshStandardMaterial).color.setHex(0x8a8f9d);
+    }
+  });
+  group.scale.setScalar(0.8);
+  return group;
+}
+
+function spawnEnemyFighters(system: SystemDef) {
+  // clear existing AI targets
   for (const eid of targetEids) {
     removeEntity(game.world, eid);
   }
@@ -212,23 +251,31 @@ function spawnTrainingDrones(seed: bigint) {
   }
   targetEids = [];
   targetMeshes.clear();
-  targetOrbits.clear();
 
-  const count = 3;
-  for (let i = 0; i < count; i++) {
-    const drng = createRng(deriveSeed(seed, "drone", i));
-    const pos = new THREE.Vector3(
-      drng.range(-180, 180),
-      drng.range(-80, 80),
-      drng.range(-900, -350)
-    );
+  const encounter = getEncounter(system);
+  const rng = createRng(encounter.seed);
+
+  for (let i = 0; i < encounter.count; i++) {
+    const archetypeId = encounter.archetypes[i] ?? "z95";
+    const archetype = getFighterArchetype(archetypeId);
+
+    const angle = rng.range(0, Math.PI * 2);
+    const r = rng.range(encounter.spawnRing.min, encounter.spawnRing.max);
+    const y = rng.range(-140, 140);
+    const pos = new THREE.Vector3(Math.cos(angle) * r, y, Math.sin(angle) * r - rng.range(300, 800));
 
     const eid = addEntity(game.world);
     addComponent(game.world, Transform, eid);
     addComponent(game.world, Velocity, eid);
+    addComponent(game.world, AngularVelocity, eid);
+    addComponent(game.world, Ship, eid);
+    addComponent(game.world, LaserWeapon, eid);
     addComponent(game.world, Targetable, eid);
     addComponent(game.world, Health, eid);
     addComponent(game.world, HitRadius, eid);
+    addComponent(game.world, Shield, eid);
+    addComponent(game.world, FighterBrain, eid);
+    addComponent(game.world, AIControlled, eid);
 
     Transform.x[eid] = pos.x;
     Transform.y[eid] = pos.y;
@@ -242,48 +289,40 @@ function spawnTrainingDrones(seed: bigint) {
     Velocity.vy[eid] = 0;
     Velocity.vz[eid] = 0;
 
-    Health.hp[eid] = 30;
-    Health.maxHp[eid] = 30;
-    HitRadius.r[eid] = 8;
+    AngularVelocity.wx[eid] = 0;
+    AngularVelocity.wy[eid] = 0;
+    AngularVelocity.wz[eid] = 0;
 
-    const mesh = new THREE.Mesh(
-      new THREE.TetrahedronGeometry(6),
-      new THREE.MeshStandardMaterial({
-        color: 0xffaa66,
-        emissive: 0x331100,
-        metalness: 0.2,
-        roughness: 0.7
-      })
-    );
+    Ship.throttle[eid] = rng.range(0.6, 0.9);
+    Ship.maxSpeed[eid] = archetype.maxSpeed;
+    Ship.accel[eid] = archetype.accel;
+    Ship.turnRate[eid] = archetype.turnRate;
+
+    LaserWeapon.cooldown[eid] = archetype.weaponCooldown;
+    LaserWeapon.cooldownRemaining[eid] = rng.range(0, archetype.weaponCooldown);
+    LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
+    LaserWeapon.damage[eid] = archetype.damage;
+
+    Health.hp[eid] = archetype.hp;
+    Health.maxHp[eid] = archetype.hp;
+    HitRadius.r[eid] = archetype.hitRadius;
+
+    Shield.maxSp[eid] = archetypeId === "tie_ln" ? 10 : 25;
+    Shield.sp[eid] = Shield.maxSp[eid];
+    Shield.regenRate[eid] = 4;
+    Shield.lastHit[eid] = 999;
+
+    FighterBrain.state[eid] = 0;
+    FighterBrain.stateTime[eid] = 0;
+    FighterBrain.aggression[eid] = archetype.aggression;
+    FighterBrain.evadeBias[eid] = archetype.evadeBias;
+    FighterBrain.targetEid[eid] = -1;
+
+    const mesh = buildEnemyMesh(archetypeId);
     mesh.position.copy(pos);
     scene.add(mesh);
-    targetEids.push(eid);
     targetMeshes.set(eid, mesh);
-    targetOrbits.set(eid, {
-      radius: drng.range(90, 220),
-      speed: drng.range(0.2, 0.5),
-      phase: drng.range(0, Math.PI * 2),
-      height: drng.range(-40, 40)
-    });
-  }
-}
-
-function updateDroneAI(dt: number) {
-  flightTimeSec += dt;
-  const player = getPlayerShip(game.world);
-  const cx = player !== null ? (Transform.x[player] ?? 0) : 0;
-  const cy = player !== null ? (Transform.y[player] ?? 0) : 0;
-  const cz = player !== null ? (Transform.z[player] ?? 0) : 0;
-
-  for (const [eid, orbit] of targetOrbits) {
-    if (!targetMeshes.has(eid)) continue;
-    const a = orbit.phase + flightTimeSec * orbit.speed;
-    const x = cx + Math.cos(a) * orbit.radius;
-    const z = cz + Math.sin(a) * orbit.radius;
-    const y = cy + orbit.height;
-    Transform.x[eid] = x;
-    Transform.y[eid] = y;
-    Transform.z[eid] = z;
+    targetEids.push(eid);
   }
 }
 
@@ -303,6 +342,11 @@ function syncTargets() {
     const mesh = targetMeshes.get(eid);
     if (!mesh) continue;
     mesh.position.set(Transform.x[eid] ?? 0, Transform.y[eid] ?? 0, Transform.z[eid] ?? 0);
+    const qx = Transform.qx[eid] ?? 0;
+    const qy = Transform.qy[eid] ?? 0;
+    const qz = Transform.qz[eid] ?? 0;
+    const qw = Transform.qw[eid] ?? 1;
+    mesh.quaternion.set(qx, qy, qz, qw);
   }
 }
 
@@ -356,7 +400,10 @@ function setupFlightHud() {
     </div>
     <div class="hud-top">
       <div id="hud-target" class="hud-target">NO TARGET</div>
+      <div id="hud-lock" class="hud-lock">LOCK 0%</div>
     </div>
+    <div id="hud-bracket" class="hud-bracket hidden"></div>
+    <div id="hud-lead" class="hud-lead hidden"></div>
     <div class="hud-left">
       <div class="hud-label">SPD</div>
       <div id="hud-speed" class="hud-value">0</div>
@@ -383,7 +430,6 @@ function enterFlightMode(system: SystemDef) {
   mode = "flight";
   currentSystem = system;
   jumpIndex = 0;
-  flightTimeSec = 0;
 
   controls.enabled = false;
   scene.clear();
@@ -414,7 +460,7 @@ function enterFlightMode(system: SystemDef) {
   shipMesh.scale.setScalar(2.5);
   scene.add(shipMesh);
 
-  spawnTrainingDrones(system.seed);
+  spawnEnemyFighters(system);
 
   camera.position.set(0, 6, 20);
   camera.lookAt(0, 0, -50);
@@ -441,7 +487,6 @@ function enterMapMode() {
     disposeObject(mesh);
   }
   targetMeshes.clear();
-  targetOrbits.clear();
 
   scene.clear();
   scene.add(new THREE.AmbientLight(0xffffff, 0.8));
@@ -449,12 +494,25 @@ function enterMapMode() {
   rebuildGalaxy();
 }
 
-function updateFlightHud() {
+function projectToScreen(pos: THREE.Vector3) {
+  const v = pos.clone().project(camera);
+  const w = renderer.domElement.clientWidth || window.innerWidth;
+  const h = renderer.domElement.clientHeight || window.innerHeight;
+  const x = (v.x * 0.5 + 0.5) * w;
+  const y = (-v.y * 0.5 + 0.5) * h;
+  const onScreen = v.z > -1 && v.z < 1 && v.x > -1 && v.x < 1 && v.y > -1 && v.y < 1;
+  return { x, y, onScreen };
+}
+
+function updateFlightHud(dtSeconds = 1 / 60) {
   const speedEl = document.querySelector<HTMLDivElement>("#hud-speed");
   const throttleEl = document.querySelector<HTMLDivElement>("#hud-throttle");
   const systemEl = document.querySelector<HTMLDivElement>("#hud-system");
   const factionEl = document.querySelector<HTMLDivElement>("#hud-faction");
   const targetEl = document.querySelector<HTMLDivElement>("#hud-target");
+  const lockEl = document.querySelector<HTMLDivElement>("#hud-lock");
+  const bracketEl = document.querySelector<HTMLDivElement>("#hud-bracket");
+  const leadEl = document.querySelector<HTMLDivElement>("#hud-lead");
 
   if (!shipEid) return;
   const v =
@@ -466,18 +524,81 @@ function updateFlightHud() {
   if (systemEl && currentSystem) systemEl.textContent = currentSystem.id;
   if (factionEl && currentSystem) factionEl.textContent = currentSystem.controllingFaction;
 
-  if (targetEl) {
-    const teid = Targeting.targetEid[shipEid] ?? -1;
-    if (teid >= 0) {
-      const dx = (Transform.x[teid] ?? 0) - (Transform.x[shipEid] ?? 0);
-      const dy = (Transform.y[teid] ?? 0) - (Transform.y[shipEid] ?? 0);
-      const dz = (Transform.z[teid] ?? 0) - (Transform.z[shipEid] ?? 0);
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const hp = Health.hp[teid] ?? 0;
-      targetEl.textContent = `TGT ${teid}  ${dist.toFixed(0)}m  HP ${hp.toFixed(0)}`;
-    } else {
-      targetEl.textContent = "NO TARGET";
+  const teid = Targeting.targetEid[shipEid] ?? -1;
+  if (teid !== lockTargetEid) {
+    lockTargetEid = teid;
+    lockValue = 0;
+  }
+
+  if (teid >= 0 && Transform.x[teid] !== undefined) {
+    const sx = Transform.x[shipEid] ?? 0;
+    const sy = Transform.y[shipEid] ?? 0;
+    const sz = Transform.z[shipEid] ?? 0;
+
+    const tx = Transform.x[teid] ?? 0;
+    const ty = Transform.y[teid] ?? 0;
+    const tz = Transform.z[teid] ?? 0;
+
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const dz = tz - sz;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    const hp = Health.hp[teid] ?? 0;
+    if (targetEl) targetEl.textContent = `TGT ${teid}  ${dist.toFixed(0)}m  HP ${hp.toFixed(0)}`;
+
+    // Bracket on target.
+    if (bracketEl) {
+      const { x, y, onScreen } = projectToScreen(new THREE.Vector3(tx, ty, tz));
+      bracketEl.classList.toggle("hidden", !onScreen);
+      if (onScreen) {
+        bracketEl.style.left = `${x}px`;
+        bracketEl.style.top = `${y}px`;
+      }
     }
+
+    // Lead pip.
+    if (leadEl) {
+      const projSpeed = LaserWeapon.projectileSpeed[shipEid] ?? 900;
+      const tvx = Velocity.vx[teid] ?? 0;
+      const tvy = Velocity.vy[teid] ?? 0;
+      const tvz = Velocity.vz[teid] ?? 0;
+      const leadTime = dist / projSpeed;
+      const leadPos = new THREE.Vector3(tx + tvx * leadTime, ty + tvy * leadTime, tz + tvz * leadTime);
+      const { x, y, onScreen } = projectToScreen(leadPos);
+      leadEl.classList.toggle("hidden", !onScreen);
+      if (onScreen) {
+        leadEl.style.left = `${x}px`;
+        leadEl.style.top = `${y}px`;
+      }
+    }
+
+    // Lock meter: fill when target is in front cone and range.
+    const q = new THREE.Quaternion(
+      Transform.qx[shipEid] ?? 0,
+      Transform.qy[shipEid] ?? 0,
+      Transform.qz[shipEid] ?? 0,
+      Transform.qw[shipEid] ?? 1
+    );
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(q).normalize();
+    const dir = new THREE.Vector3(dx, dy, dz).normalize();
+    const dot = forward.dot(dir);
+    const inCone = dot > 0.95 && dist < 900;
+
+    lockValue += (inCone ? 1 : -1) * 0.6 * dtSeconds;
+    lockValue = Math.min(1, Math.max(0, lockValue));
+
+    if (lockEl) {
+      const pct = Math.round(lockValue * 100);
+      lockEl.textContent = lockValue >= 1 ? "LOCK" : `LOCK ${pct}%`;
+    }
+  } else {
+    if (targetEl) targetEl.textContent = "NO TARGET";
+    if (bracketEl) bracketEl.classList.add("hidden");
+    if (leadEl) leadEl.classList.add("hidden");
+    lockValue = 0;
+    lockTargetEid = -1;
+    if (lockEl) lockEl.textContent = "LOCK 0%";
   }
 }
 
@@ -497,6 +618,7 @@ function hyperspaceJump() {
   currentSystem = next;
 
   buildLocalStarfield(next.seed);
+  spawnEnemyFighters(next);
   if (shipEid !== null) {
     Transform.x[shipEid] = 0;
     Transform.y[shipEid] = 0;
@@ -612,9 +734,12 @@ game.setTick((dt) => {
   // Flight mode
   input.update();
   targetingSystem(game.world, input.state);
+  dogfightAISystem(game.world, dt);
   spaceflightSystem(game.world, input.state, dt);
   weaponSystem(game.world, input.state, dt);
+  aiWeaponSystem(game.world, dt);
   projectileSystem(game.world, dt);
+  shieldRegenSystem(game.world, dt);
 
   const player = getPlayerShip(game.world);
   if (player !== null && shipMesh) {
@@ -629,17 +754,16 @@ game.setTick((dt) => {
     camera.lookAt(pos.clone().add(lookOffset));
   }
 
-  updateDroneAI(dt);
   syncTargets();
   if (targetEids.length === 0 && currentSystem) {
-    spawnTrainingDrones(currentSystem.seed);
+    spawnEnemyFighters(currentSystem);
   }
   syncProjectiles();
 
   if (input.state.hyperspace) hyperspaceJump();
   if (input.state.toggleMap) enterMapMode();
 
-  updateFlightHud();
+  updateFlightHud(dt);
   renderer.render(scene, camera);
 });
 game.start();

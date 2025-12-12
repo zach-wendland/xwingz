@@ -101,3 +101,84 @@ export const SYSTEM_ARCHETYPES: SystemArchetype[] = [
   }
 ];
 
+// ---- Space Combat Archetypes (v0) ----
+export type FighterArchetypeId = "xwing_player" | "tie_ln" | "z95" | "pirate_fang";
+
+export type FighterArchetype = {
+  id: FighterArchetypeId;
+  tags: string[];
+  factionTag: FactionId;
+  maxSpeed: number;
+  accel: number;
+  turnRate: number;
+  weaponCooldown: number;
+  projectileSpeed: number;
+  damage: number;
+  hp: number;
+  hitRadius: number;
+  aggression: number; // 0..1
+  evadeBias: number;  // 0..1
+};
+
+export const FIGHTER_ARCHETYPES: FighterArchetype[] = [
+  {
+    id: "xwing_player",
+    tags: ["player", "rebel"],
+    factionTag: "republic",
+    maxSpeed: 260,
+    accel: 130,
+    turnRate: 1.35,
+    weaponCooldown: 0.11,
+    projectileSpeed: 950,
+    damage: 10,
+    hp: 120,
+    hitRadius: 10,
+    aggression: 0.5,
+    evadeBias: 0.4
+  },
+  {
+    id: "tie_ln",
+    tags: ["fighter", "imperial"],
+    factionTag: "empire",
+    maxSpeed: 280,
+    accel: 140,
+    turnRate: 1.55,
+    weaponCooldown: 0.14,
+    projectileSpeed: 900,
+    damage: 9,
+    hp: 70,
+    hitRadius: 9,
+    aggression: 0.75,
+    evadeBias: 0.35
+  },
+  {
+    id: "z95",
+    tags: ["fighter", "scrappy"],
+    factionTag: "independent",
+    maxSpeed: 230,
+    accel: 110,
+    turnRate: 1.1,
+    weaponCooldown: 0.18,
+    projectileSpeed: 820,
+    damage: 8,
+    hp: 90,
+    hitRadius: 10,
+    aggression: 0.6,
+    evadeBias: 0.5
+  },
+  {
+    id: "pirate_fang",
+    tags: ["fighter", "pirate"],
+    factionTag: "pirates",
+    maxSpeed: 250,
+    accel: 120,
+    turnRate: 1.25,
+    weaponCooldown: 0.16,
+    projectileSpeed: 860,
+    damage: 8,
+    hp: 85,
+    hitRadius: 10,
+    aggression: 0.65,
+    evadeBias: 0.6
+  }
+];

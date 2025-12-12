@@ -55,6 +55,22 @@ export const HitRadius = defineComponent({
 
 export const AIControlled = defineComponent();
 
+// Simple dogfight brain for AI fighters.
+export const FighterBrain = defineComponent({
+  state: Types.i32,       // enum
+  stateTime: Types.f32,   // seconds in current state
+  aggression: Types.f32,  // 0..1
+  evadeBias: Types.f32,   // 0..1
+  targetEid: Types.i32    // -1 when none
+});
+
+export const Shield = defineComponent({
+  sp: Types.f32,
+  maxSp: Types.f32,
+  regenRate: Types.f32,   // sp/sec
+  lastHit: Types.f32      // seconds since last hit
+});
+
 // Marks an entity as targetable by players/AI.
 export const Targetable = defineComponent();
 

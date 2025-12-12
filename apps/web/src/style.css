@@ -42,6 +42,72 @@ canvas {
   display: none;
 }
 
+#overlay.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: #7cff7c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-shadow: 0 0 6px rgba(124, 255, 124, 0.35);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.overlay-panel {
+  width: min(720px, calc(100vw - 48px));
+  padding: 16px 18px;
+  border: 1px solid rgba(124, 255, 124, 0.65);
+  background: rgba(2, 3, 7, 0.82);
+  box-shadow: 0 0 22px rgba(124, 255, 124, 0.12);
+}
+
+.overlay-title {
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+}
+
+.overlay-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.overlay-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.overlay-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  padding: 6px 8px;
+  border: 1px solid rgba(124, 255, 124, 0.25);
+  background: rgba(124, 255, 124, 0.04);
+}
+
+.overlay-row .muted {
+  opacity: 0.8;
+}
+
+.overlay-row .right {
+  margin-left: auto;
+  opacity: 0.95;
+}
+
+.overlay-hint {
+  margin-top: 12px;
+  font-size: 11px;
+  opacity: 0.85;
+  letter-spacing: 0.08em;
+}
+
 .hud-reticle {
   position: absolute;
   left: 50%;
@@ -72,6 +138,14 @@ canvas {
   font-size: 11px;
   margin-top: 4px;
   opacity: 0.9;
+}
+
+.hud-mission {
+  font-size: 11px;
+  margin-top: 6px;
+  opacity: 0.95;
+  letter-spacing: 0.06em;
+  text-align: center;
 }
 
 .hud-bracket {

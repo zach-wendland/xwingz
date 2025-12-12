@@ -26,6 +26,8 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
   addComponent(world, Ship, eid);
   addComponent(world, LaserWeapon, eid);
   addComponent(world, Targeting, eid);
+  addComponent(world, Health, eid);
+  addComponent(world, HitRadius, eid);
   addComponent(world, Shield, eid);
   addComponent(world, PlayerControlled, eid);
 
@@ -45,7 +47,7 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
   AngularVelocity.wy[eid] = 0;
   AngularVelocity.wz[eid] = 0;
 
-  Ship.throttle[eid] = 0.2;
+  Ship.throttle[eid] = 0.6;
   Ship.maxSpeed[eid] = params?.maxSpeed ?? 250;
   Ship.accel[eid] = params?.accel ?? 120;
   Ship.turnRate[eid] = params?.turnRate ?? 1.2;
@@ -56,6 +58,10 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
   LaserWeapon.damage[eid] = 10;
 
   Targeting.targetEid[eid] = -1;
+
+  Health.hp[eid] = 120;
+  Health.maxHp[eid] = 120;
+  HitRadius.r[eid] = 11;
 
   Shield.maxSp[eid] = 60;
   Shield.sp[eid] = 60;
@@ -70,7 +76,7 @@ const playerQuery = defineQuery([Ship, PlayerControlled]);
 const weaponQuery = defineQuery([Ship, LaserWeapon, Transform, Velocity]);
 const projectileQuery = defineQuery([Projectile, Transform, Velocity]);
 const targetableQuery = defineQuery([Targetable, Transform]);
-const combatTargetQuery = defineQuery([Targetable, Health, HitRadius, Transform]);
+const combatTargetQuery = defineQuery([Health, HitRadius, Transform]);
 const targetingQuery = defineQuery([Targeting, PlayerControlled, Transform]);
 const aiQuery = defineQuery([AIControlled, FighterBrain, Ship, LaserWeapon, Transform, Velocity, AngularVelocity]);
 
@@ -83,6 +89,7 @@ const tmpDesired = new Vector3();
 const tmpLocal = new Vector3();
 const tmpTargetVel = new Vector3();
 const tmpSep = new Vector3();
+const tmpLateral = new Vector3();
 
 export function spaceflightSystem(world: IWorld, input: SpaceInputState, dt: number) {
   const ships = shipQuery(world);
@@ -129,20 +136,27 @@ export function spaceflightSystem(world: IWorld, input: SpaceInputState, dt: num
     const maxSpeed0 = Ship.maxSpeed[eid] ?? 250;
     const accel0 = Ship.accel[eid] ?? 120;
     const throttle = clamp01(Ship.throttle[eid] ?? 1);
-    const maxSpeed = maxSpeed0 * (isPlayer && input.boost ? 1.7 : 1);
-    const accel = accel0 * throttle * (isPlayer && input.boost ? 2.0 : 1);
-    tmpVel.addScaledVector(tmpForward, accel * dt);
+    const boostScalar = isPlayer && input.boost ? 1.7 : 1;
 
-    if (isPlayer && input.brake) {
-      tmpVel.multiplyScalar(Math.max(0, 1 - dt * 3.5));
-    }
+    // Throttle drives target speed (arcade dogfight feel).
+    let desiredSpeed = maxSpeed0 * throttle * boostScalar;
+    if (isPlayer && input.brake) desiredSpeed = 0;
 
-    // Soft cap speed.
-    const speed = tmpVel.length();
-    if (speed > maxSpeed) tmpVel.multiplyScalar(maxSpeed / speed);
+    const accelLimit = accel0 * (isPlayer && input.boost ? 2.0 : 1) * dt;
+    const decelLimit = accel0 * (isPlayer && input.brake ? 3.5 : 2.0) * dt;
 
-    // Drift damping to keep it controllable in v1.
-    tmpVel.multiplyScalar(Math.max(0, 1 - dt * 0.05));
+    const forwardSpeed0 = tmpVel.dot(tmpForward);
+    const delta = desiredSpeed - forwardSpeed0;
+    const forwardSpeed =
+      delta >= 0 ? forwardSpeed0 + clamp(delta, 0, accelLimit) : forwardSpeed0 + clamp(delta, -decelLimit, 0);
+
+    // Damp lateral drift aggressively to keep turn-fights tight in v1.
+    tmpDesired.copy(tmpForward).multiplyScalar(forwardSpeed0);
+    tmpLateral.copy(tmpVel).sub(tmpDesired);
+    const lateralDamp = isPlayer && input.brake ? 5.0 : 1.7;
+    tmpLateral.multiplyScalar(Math.max(0, 1 - dt * lateralDamp));
+
+    tmpVel.copy(tmpForward).multiplyScalar(forwardSpeed).add(tmpLateral);
 
     Velocity.vx[eid] = tmpVel.x;
     Velocity.vy[eid] = tmpVel.y;

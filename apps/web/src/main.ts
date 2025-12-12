@@ -7,6 +7,8 @@ import {
   deriveSeed,
   getEncounter,
   getFighterArchetype,
+  getMission,
+  type MissionDef,
   type Vec3i,
   type SystemDef
 } from "@xwingz/procgen";
@@ -47,6 +49,7 @@ if (!root) throw new Error("#app not found");
 root.innerHTML = `
   <canvas id="game-canvas"></canvas>
   <div id="hud"></div>
+  <div id="overlay" class="overlay hidden"></div>
 `;
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game-canvas");
@@ -62,6 +65,7 @@ controls.minDistance = 50;
 controls.maxDistance = 5000;
 
 const hud = document.querySelector<HTMLDivElement>("#hud")!;
+const overlay = document.querySelector<HTMLDivElement>("#overlay")!;
 
 const globalSeed = 42n;
 const cache = new GalaxyCache({ globalSeed }, { maxSectors: 256 });
@@ -142,9 +146,10 @@ function rebuildGalaxy() {
   hud.innerText =
     `xwingz – galaxy map\n` +
     `Seed: ${globalSeed.toString()}\n` +
+    `Credits: ${credits} | Tier: ${missionTier}\n` +
     `Center sector: [${centerSector.join(", ")}], radius ${radius}\n` +
     `Systems: ${systems.length}\n` +
-    `WASD/Arrows move sector | Q/E Z-axis | +/- radius | click system | Enter to fly`;
+    `WASD/Arrows move sector | Q/E Z-axis | +/- radius | click system | Enter to fly | U upgrades`;
 }
 
 // ---- Flight state ----
@@ -160,14 +165,258 @@ let targetEids: number[] = [];
 let lockValue = 0;
 let lockTargetEid = -1;
 const boltForward = new THREE.Vector3(0, 0, 1);
+let playerDead = false;
+let respawnTimer = 0;
+const RESPAWN_DELAY = 2.0;
+let credits = 0;
+let missionTier = 0;
+type MissionRuntime = {
+  def: MissionDef;
+  kills: number;
+  wave: number;
+  completed: boolean;
+  message: string;
+  messageTimer: number;
+};
+let mission: MissionRuntime | null = null;
+
+type Upgrades = {
+  engine: number;
+  maneuver: number;
+  shields: number;
+  lasers: number;
+  hull: number;
+};
+
+let upgrades: Upgrades = {
+  engine: 0,
+  maneuver: 0,
+  shields: 0,
+  lasers: 0,
+  hull: 0
+};
+let upgradesOpen = false;
+
+const PROFILE_KEY = "xwingz_profile_v0";
+let saveHandle: number | null = null;
+
+function loadProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Partial<{
+      v: number;
+      credits: number;
+      missionTier: number;
+      upgrades: Partial<Upgrades>;
+    }>;
+    if (typeof parsed.credits === "number") credits = Math.max(0, Math.floor(parsed.credits));
+    if (typeof parsed.missionTier === "number") missionTier = Math.max(0, Math.floor(parsed.missionTier));
+    if (parsed.upgrades) {
+      upgrades = {
+        engine: clampInt(parsed.upgrades.engine ?? upgrades.engine, 0, 10),
+        maneuver: clampInt(parsed.upgrades.maneuver ?? upgrades.maneuver, 0, 10),
+        shields: clampInt(parsed.upgrades.shields ?? upgrades.shields, 0, 10),
+        lasers: clampInt(parsed.upgrades.lasers ?? upgrades.lasers, 0, 10),
+        hull: clampInt(parsed.upgrades.hull ?? upgrades.hull, 0, 10)
+      };
+    }
+  } catch {
+    // ignore corrupted profile
+  }
+}
+
+function saveProfile() {
+  try {
+    localStorage.setItem(
+      PROFILE_KEY,
+      JSON.stringify({
+        v: 0,
+        credits: Math.max(0, Math.floor(credits)),
+        missionTier: Math.max(0, Math.floor(missionTier)),
+        upgrades
+      })
+    );
+  } catch {
+    // ignore quota / storage errors for now
+  }
+}
+
+function scheduleSave() {
+  if (saveHandle !== null) return;
+  saveHandle = window.setTimeout(() => {
+    saveHandle = null;
+    saveProfile();
+  }, 500);
+}
+
+type UpgradeId = keyof Upgrades;
+type UpgradeDef = {
+  id: UpgradeId;
+  name: string;
+  summary: string;
+  baseCost: number;
+  growth: number;
+  maxLevel: number;
+};
+
+const UPGRADE_DEFS: UpgradeDef[] = [
+  { id: "engine", name: "ENGINES", summary: "+SPD/+ACC", baseCost: 220, growth: 1.55, maxLevel: 10 },
+  { id: "maneuver", name: "MANEUVER", summary: "+TURN", baseCost: 200, growth: 1.55, maxLevel: 10 },
+  { id: "shields", name: "SHIELDS", summary: "+MAX/+REGEN", baseCost: 240, growth: 1.6, maxLevel: 10 },
+  { id: "lasers", name: "LASERS", summary: "+DMG/+ROF", baseCost: 280, growth: 1.6, maxLevel: 10 },
+  { id: "hull", name: "HULL", summary: "+HP", baseCost: 200, growth: 1.55, maxLevel: 10 }
+];
+
+function getUpgradeCost(def: UpgradeDef) {
+  const level = upgrades[def.id];
+  if (level >= def.maxLevel) return null;
+  return Math.round(def.baseCost * Math.pow(def.growth, level));
+}
+
+function openUpgrades() {
+  upgradesOpen = true;
+  renderUpgradesOverlay();
+  overlay.classList.remove("hidden");
+}
+
+function closeUpgrades() {
+  upgradesOpen = false;
+  overlay.classList.add("hidden");
+  overlay.innerHTML = "";
+}
+
+function toggleUpgrades() {
+  if (upgradesOpen) closeUpgrades();
+  else openUpgrades();
+}
+
+function renderUpgradesOverlay() {
+  const lines = UPGRADE_DEFS.map((def, idx) => {
+    const level = upgrades[def.id];
+    const cost = getUpgradeCost(def);
+    const locked = cost === null ? "MAX" : cost > credits ? `NEED ${cost}` : `BUY ${cost}`;
+    return `<div class="overlay-row">${idx + 1}) ${def.name}  LV ${level}/${def.maxLevel}  <span class="muted">${def.summary}</span>  <span class="right">${locked} CR</span></div>`;
+  }).join("");
+
+  overlay.innerHTML = `
+    <div class="overlay-panel">
+      <div class="overlay-title">HANGAR UPGRADES</div>
+      <div class="overlay-sub">Credits: ${credits} • Tier: ${missionTier}</div>
+      <div class="overlay-list">${lines}</div>
+      <div class="overlay-hint">Press 1–5 to buy • U/Esc to close</div>
+    </div>
+  `;
+}
+
+function buyUpgrade(def: UpgradeDef) {
+  const cost = getUpgradeCost(def);
+  if (cost === null) return;
+  if (credits < cost) return;
+
+  credits -= cost;
+  upgrades[def.id] += 1;
+  applyUpgradesToPlayer(true);
+  scheduleSave();
+  renderUpgradesOverlay();
+}
+
+function computePlayerStats() {
+  const base = getFighterArchetype("xwing_player");
+  const engineLvl = upgrades.engine;
+  const maneuverLvl = upgrades.maneuver;
+  const shieldLvl = upgrades.shields;
+  const laserLvl = upgrades.lasers;
+  const hullLvl = upgrades.hull;
+
+  const maxSpeed = base.maxSpeed * (1 + engineLvl * 0.06);
+  const accel = base.accel * (1 + engineLvl * 0.08);
+  const turnRate = base.turnRate * (1 + maneuverLvl * 0.08);
+
+  const maxSp = 60 + shieldLvl * 14;
+  const regen = 6 + shieldLvl * 0.8;
+
+  const maxHp = base.hp + hullLvl * 16;
+
+  const damage = base.damage * (1 + laserLvl * 0.08);
+  const weaponCooldown = Math.max(0.06, base.weaponCooldown * (1 - laserLvl * 0.03));
+
+  return {
+    maxSpeed,
+    accel,
+    turnRate,
+    maxSp,
+    regen,
+    maxHp,
+    damage,
+    weaponCooldown,
+    projectileSpeed: base.projectileSpeed
+  };
+}
+
+function applyUpgradesToPlayer(refill = false) {
+  if (shipEid === null) return;
+  const stats = computePlayerStats();
+
+  Ship.maxSpeed[shipEid] = stats.maxSpeed;
+  Ship.accel[shipEid] = stats.accel;
+  Ship.turnRate[shipEid] = stats.turnRate;
+
+  LaserWeapon.damage[shipEid] = stats.damage;
+  LaserWeapon.cooldown[shipEid] = stats.weaponCooldown;
+  LaserWeapon.projectileSpeed[shipEid] = stats.projectileSpeed;
+  LaserWeapon.cooldownRemaining[shipEid] = Math.min(LaserWeapon.cooldownRemaining[shipEid] ?? 0, stats.weaponCooldown);
+
+  Shield.maxSp[shipEid] = stats.maxSp;
+  Shield.regenRate[shipEid] = stats.regen;
+  if (refill) Shield.sp[shipEid] = stats.maxSp;
+
+  Health.maxHp[shipEid] = stats.maxHp;
+  if (refill) Health.hp[shipEid] = stats.maxHp;
+}
+
+window.addEventListener("beforeunload", () => saveProfile());
+window.addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+
+  const k = e.key.toLowerCase();
+  if (k === "u") {
+    toggleUpgrades();
+    e.preventDefault();
+    return;
+  }
+
+  if (!upgradesOpen) return;
+
+  if (e.key === "Escape") {
+    closeUpgrades();
+    e.preventDefault();
+    return;
+  }
+
+  const num = Number.parseInt(e.key, 10);
+  if (!Number.isFinite(num)) return;
+  const idx = num - 1;
+  const def = UPGRADE_DEFS[idx];
+  if (!def) return;
+
+  buyUpgrade(def);
+  e.preventDefault();
+});
+
+loadProfile();
 
 type FlightHudElements = {
   speed: HTMLDivElement;
   throttle: HTMLDivElement;
+  shield: HTMLDivElement;
+  hp: HTMLDivElement;
   system: HTMLDivElement;
   faction: HTMLDivElement;
+  credits: HTMLDivElement;
   target: HTMLDivElement;
   lock: HTMLDivElement;
+  mission: HTMLDivElement;
   bracket: HTMLDivElement;
   lead: HTMLDivElement;
 };
@@ -272,7 +521,7 @@ function buildEnemyMesh(id: string) {
   return group;
 }
 
-function spawnEnemyFighters(system: SystemDef) {
+function spawnEnemyFighters(system: SystemDef, encounterKey = "v0") {
   // clear existing AI targets
   for (const eid of targetEids) {
     removeEntity(game.world, eid);
@@ -284,7 +533,7 @@ function spawnEnemyFighters(system: SystemDef) {
   targetEids = [];
   targetMeshes.clear();
 
-  const encounter = getEncounter(system);
+  const encounter = getEncounter(system, encounterKey);
   const rng = createRng(encounter.seed);
 
   for (let i = 0; i < encounter.count; i++) {
@@ -361,13 +610,31 @@ function spawnEnemyFighters(system: SystemDef) {
 function syncTargets() {
   const aliveTargets = getTargetables(game.world);
   const aliveSet = new Set(aliveTargets);
+  let killed = 0;
 
   for (const [eid, mesh] of targetMeshes) {
     if (aliveSet.has(eid)) continue;
+    killed += 1;
     spawnExplosion(tmpExplosionPos.copy(mesh.position));
     scene.remove(mesh);
     disposeObject(mesh);
     targetMeshes.delete(eid);
+  }
+
+  if (killed > 0 && mission && !mission.completed && !playerDead) {
+    mission.kills += killed;
+    credits += killed * 5;
+
+    if (mission.kills >= mission.def.goalKills) {
+      mission.kills = mission.def.goalKills;
+      mission.completed = true;
+      credits += mission.def.rewardCredits;
+      missionTier += 1;
+      mission.message = `MISSION COMPLETE  +${mission.def.rewardCredits} CR`;
+      mission.messageTimer = 4;
+    }
+
+    scheduleSave();
   }
 
   targetEids = aliveTargets;
@@ -487,6 +754,7 @@ function setupFlightHud() {
     <div class="hud-top">
       <div id="hud-target" class="hud-target">NO TARGET</div>
       <div id="hud-lock" class="hud-lock">LOCK 0%</div>
+      <div id="hud-mission" class="hud-mission"></div>
     </div>
     <div id="hud-bracket" class="hud-bracket hidden"></div>
     <div id="hud-lead" class="hud-lead hidden"></div>
@@ -495,12 +763,18 @@ function setupFlightHud() {
       <div id="hud-speed" class="hud-value">0</div>
       <div class="hud-label">THR</div>
       <div id="hud-throttle" class="hud-value">0%</div>
+      <div class="hud-label">SHD</div>
+      <div id="hud-shield" class="hud-value">0</div>
+      <div class="hud-label">HP</div>
+      <div id="hud-hp" class="hud-value">0</div>
     </div>
     <div class="hud-right">
       <div class="hud-label">SYS</div>
       <div id="hud-system" class="hud-value"></div>
       <div class="hud-label">FAC</div>
       <div id="hud-faction" class="hud-value"></div>
+      <div class="hud-label">CR</div>
+      <div id="hud-credits" class="hud-value">0</div>
     </div>
     <div class="hud-bottom">
       <div class="hud-label">HYPERSPACE: H</div>
@@ -508,6 +782,7 @@ function setupFlightHud() {
       <div class="hud-label">MAP: M</div>
       <div class="hud-label">BOOST: SHIFT</div>
       <div class="hud-label">BRAKE: X</div>
+      <div class="hud-label">UPGRADES: U</div>
     </div>
   `;
 
@@ -519,19 +794,27 @@ function setupFlightHud() {
   flightHud = {
     speed: q<HTMLDivElement>("#hud-speed"),
     throttle: q<HTMLDivElement>("#hud-throttle"),
+    shield: q<HTMLDivElement>("#hud-shield"),
+    hp: q<HTMLDivElement>("#hud-hp"),
     system: q<HTMLDivElement>("#hud-system"),
     faction: q<HTMLDivElement>("#hud-faction"),
+    credits: q<HTMLDivElement>("#hud-credits"),
     target: q<HTMLDivElement>("#hud-target"),
     lock: q<HTMLDivElement>("#hud-lock"),
+    mission: q<HTMLDivElement>("#hud-mission"),
     bracket: q<HTMLDivElement>("#hud-bracket"),
     lead: q<HTMLDivElement>("#hud-lead")
   };
 }
 
 function enterFlightMode(system: SystemDef) {
+  if (upgradesOpen) closeUpgrades();
   mode = "flight";
   currentSystem = system;
   jumpIndex = 0;
+  playerDead = false;
+  respawnTimer = 0;
+  mission = null;
 
   controls.enabled = false;
   resetExplosions();
@@ -545,25 +828,11 @@ function enterFlightMode(system: SystemDef) {
   buildLocalStarfield(system.seed);
 
   // Clear any leftover projectiles from prior flights.
-  for (const eid of projectileMeshes.keys()) {
-    removeEntity(game.world, eid);
-  }
-  projectileMeshes.clear();
+  clearProjectiles();
 
-  if (shipEid !== null) {
-    removeEntity(game.world, shipEid);
-  }
-  if (shipMesh) {
-    scene.remove(shipMesh);
-    shipMesh = null;
-  }
+  respawnPlayer();
 
-  shipEid = spawnPlayerShip(game.world);
-  shipMesh = buildShipMesh();
-  shipMesh.scale.setScalar(2.5);
-  scene.add(shipMesh);
-
-  spawnEnemyFighters(system);
+  startMission(system);
 
   camera.position.set(0, 6, 20);
   camera.lookAt(0, 0, -50);
@@ -572,17 +841,64 @@ function enterFlightMode(system: SystemDef) {
   updateFlightHud();
 }
 
+function clearProjectiles() {
+  const ps = getProjectiles(game.world);
+  for (const eid of ps) removeEntity(game.world, eid);
+  for (const mesh of projectileMeshes.values()) {
+    scene.remove(mesh);
+    disposeObject(mesh);
+  }
+  projectileMeshes.clear();
+}
+
+function respawnPlayer() {
+  if (shipEid !== null) {
+    removeEntity(game.world, shipEid);
+  }
+  if (shipMesh) {
+    scene.remove(shipMesh);
+    disposeObject(shipMesh);
+    shipMesh = null;
+  }
+
+  shipEid = spawnPlayerShip(game.world);
+  applyUpgradesToPlayer(true);
+  shipMesh = buildShipMesh();
+  shipMesh.scale.setScalar(2.5);
+  scene.add(shipMesh);
+
+  lockValue = 0;
+  lockTargetEid = -1;
+}
+
+function startMission(system: SystemDef) {
+  mission = {
+    def: getMission(system, missionTier),
+    kills: 0,
+    wave: 0,
+    completed: false,
+    message: "",
+    messageTimer: 0
+  };
+  spawnMissionWave(system);
+}
+
+function spawnMissionWave(system: SystemDef) {
+  if (!mission) return;
+  const key = `${mission.def.id}:wave:${mission.wave}`;
+  mission.wave += 1;
+  spawnEnemyFighters(system, key);
+}
+
 function enterMapMode() {
+  if (upgradesOpen) closeUpgrades();
   mode = "map";
   controls.enabled = true;
   flightHud = null;
   resetExplosions();
 
   // Remove flight-only ECS entities and meshes.
-  for (const eid of projectileMeshes.keys()) {
-    removeEntity(game.world, eid);
-  }
-  projectileMeshes.clear();
+  clearProjectiles();
 
   for (const eid of targetEids) {
     removeEntity(game.world, eid);
@@ -592,6 +908,16 @@ function enterMapMode() {
     disposeObject(mesh);
   }
   targetMeshes.clear();
+
+  if (shipEid !== null) {
+    removeEntity(game.world, shipEid);
+    shipEid = null;
+  }
+  if (shipMesh) {
+    scene.remove(shipMesh);
+    disposeObject(shipMesh);
+    shipMesh = null;
+  }
 
   scene.clear();
   scene.add(new THREE.AmbientLight(0xffffff, 0.8));
@@ -626,16 +952,56 @@ function projectToScreen(pos: THREE.Vector3, out: ScreenPoint) {
 
 function updateFlightHud(dtSeconds = 1 / 60) {
   const els = flightHud;
-  if (!shipEid || !els) return;
+  if (!els) return;
+
+  if (!shipEid) {
+    els.speed.textContent = "0";
+    els.throttle.textContent = "0%";
+    els.shield.textContent = "0/0";
+    els.hp.textContent = "0/0";
+    if (currentSystem) {
+      els.system.textContent = currentSystem.id;
+      els.faction.textContent = currentSystem.controllingFaction;
+    }
+    els.credits.textContent = credits.toString();
+    els.mission.textContent = mission ? mission.def.title : "";
+    els.target.textContent = playerDead ? "SHIP DESTROYED" : "NO TARGET";
+    els.lock.textContent = playerDead ? "RESPAWNING..." : "LOCK 0%";
+    els.bracket.classList.add("hidden");
+    els.lead.classList.add("hidden");
+    return;
+  }
+
   const v =
     Math.hypot(Velocity.vx[shipEid], Velocity.vy[shipEid], Velocity.vz[shipEid]) || 0;
   const t = Ship.throttle[shipEid] || 0;
+  const sp = Shield.sp[shipEid] ?? 0;
+  const maxSp = Shield.maxSp[shipEid] ?? 0;
+  const hpSelf = Health.hp[shipEid] ?? 0;
+  const maxHpSelf = Health.maxHp[shipEid] ?? 0;
 
   els.speed.textContent = v.toFixed(0);
   els.throttle.textContent = `${Math.round(t * 100)}%`;
+  els.shield.textContent = `${sp.toFixed(0)}/${maxSp.toFixed(0)}`;
+  els.hp.textContent = `${hpSelf.toFixed(0)}/${maxHpSelf.toFixed(0)}`;
   if (currentSystem) {
     els.system.textContent = currentSystem.id;
     els.faction.textContent = currentSystem.controllingFaction;
+  }
+  els.credits.textContent = credits.toString();
+
+  if (mission) {
+    if (mission.messageTimer > 0) {
+      els.mission.textContent = mission.message;
+    } else if (mission.completed) {
+      els.mission.textContent = "MISSION COMPLETE — PRESS H TO JUMP";
+    } else {
+      els.mission.textContent =
+        `${mission.def.title}: ${mission.kills}/${mission.def.goalKills}  ` +
+        `REWARD ${mission.def.rewardCredits} CR`;
+    }
+  } else {
+    els.mission.textContent = "";
   }
 
   const teid = Targeting.targetEid[shipEid] ?? -1;
@@ -739,7 +1105,8 @@ function hyperspaceJump() {
   currentSystem = next;
 
   buildLocalStarfield(next.seed);
-  spawnEnemyFighters(next);
+  clearProjectiles();
+  startMission(next);
   if (shipEid !== null) {
     Transform.x[shipEid] = 0;
     Transform.y[shipEid] = 0;
@@ -753,7 +1120,7 @@ function hyperspaceJump() {
 
 // ---- Input handlers (map only) ----
 window.addEventListener("keydown", (e) => {
-  if (mode !== "map") return;
+  if (mode !== "map" || upgradesOpen) return;
   const [x, y, z] = centerSector;
   switch (e.key) {
     case "w":
@@ -801,13 +1168,13 @@ window.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("pointermove", (ev) => {
-  if (mode !== "map") return;
+  if (mode !== "map" || upgradesOpen) return;
   mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
   mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
 });
 
 window.addEventListener("click", (ev) => {
-  if (mode !== "map" || !systemsPoints) return;
+  if (mode !== "map" || upgradesOpen || !systemsPoints) return;
   mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
   mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
@@ -820,6 +1187,7 @@ window.addEventListener("click", (ev) => {
   if (!sys) return;
 
   selectedSystem = sys;
+  const preview = getMission(sys, missionTier);
   if (selectedMarker) {
     selectedMarker.visible = true;
     selectedMarker.position.set(
@@ -831,6 +1199,7 @@ window.addEventListener("click", (ev) => {
   hud.innerText =
     `xwingz – galaxy map\n` +
     `Seed: ${globalSeed.toString()}\n` +
+    `Credits: ${credits} | Tier: ${missionTier}\n` +
     `Center sector: [${centerSector.join(", ")}], radius ${radius}\n` +
     `Systems: ${systems.length}\n\n` +
     `Selected ${sys.id}\n` +
@@ -838,6 +1207,7 @@ window.addEventListener("click", (ev) => {
     `Archetype: ${sys.archetypeId}\n` +
     `Faction: ${sys.controllingFaction}\n` +
     `Economy: wealth ${sys.economy.wealth.toFixed(2)}, industry ${sys.economy.industry.toFixed(2)}, security ${sys.economy.security.toFixed(2)}\n` +
+    `Mission: ${preview.title} — ${preview.goalKills} kills, reward ${preview.rewardCredits} CR\n` +
     `Press Enter to fly here`;
 });
 
@@ -854,6 +1224,35 @@ game.setTick((dt) => {
 
   // Flight mode
   input.update();
+  if (input.state.toggleMap) {
+    enterMapMode();
+    return;
+  }
+
+  if (playerDead) {
+    respawnTimer += dt;
+    if (respawnTimer >= RESPAWN_DELAY && currentSystem) {
+      // Clean slate on respawn for now.
+      clearProjectiles();
+      respawnPlayer();
+      startMission(currentSystem);
+      playerDead = false;
+      respawnTimer = 0;
+    }
+
+    updateFlightHud(dt);
+    updateExplosions(dt);
+    renderer.render(scene, camera);
+    return;
+  }
+
+  if (upgradesOpen) {
+    updateFlightHud(dt);
+    updateExplosions(dt);
+    renderer.render(scene, camera);
+    return;
+  }
+
   targetingSystem(game.world, input.state);
   dogfightAISystem(game.world, dt);
   spaceflightSystem(game.world, input.state, dt);
@@ -863,6 +1262,23 @@ game.setTick((dt) => {
   shieldRegenSystem(game.world, dt);
 
   const player = getPlayerShip(game.world);
+  if (player === null) {
+    playerDead = true;
+    respawnTimer = 0;
+    clearProjectiles();
+    if (shipMesh) {
+      spawnExplosion(tmpExplosionPos.copy(shipMesh.position), 0xff5555);
+      scene.remove(shipMesh);
+      disposeObject(shipMesh);
+      shipMesh = null;
+    }
+    shipEid = null;
+    updateFlightHud(dt);
+    updateExplosions(dt);
+    renderer.render(scene, camera);
+    return;
+  }
+
   if (player !== null && shipMesh) {
     shipMesh.position.set(Transform.x[player], Transform.y[player], Transform.z[player]);
     shipMesh.quaternion.set(Transform.qx[player], Transform.qy[player], Transform.qz[player], Transform.qw[player]);
@@ -876,13 +1292,16 @@ game.setTick((dt) => {
   }
 
   syncTargets();
-  if (targetEids.length === 0 && currentSystem) {
-    spawnEnemyFighters(currentSystem);
+  if (mission && currentSystem && !mission.completed && mission.kills < mission.def.goalKills && targetEids.length === 0) {
+    spawnMissionWave(currentSystem);
   }
   syncProjectiles();
 
   if (input.state.hyperspace) hyperspaceJump();
-  if (input.state.toggleMap) enterMapMode();
+
+  if (mission && mission.messageTimer > 0) {
+    mission.messageTimer = Math.max(0, mission.messageTimer - dt);
+  }
 
   updateFlightHud(dt);
   updateExplosions(dt);
@@ -892,4 +1311,9 @@ game.start();
 
 function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v));
+}
+
+function clampInt(v: number, min: number, max: number) {
+  if (!Number.isFinite(v)) return min;
+  return Math.min(max, Math.max(min, Math.floor(v)));
 }

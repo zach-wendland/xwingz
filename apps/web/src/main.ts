@@ -11,15 +11,24 @@ import {
 import {
   createSpaceInput,
   getPlayerShip,
+  getProjectiles,
+  getTargetables,
   spaceflightSystem,
   spawnPlayerShip,
+  targetingSystem,
+  weaponSystem,
+  projectileSystem,
+  Health,
+  HitRadius,
   Ship,
+  Targetable,
+  Targeting,
   Transform,
   Velocity
 } from "@xwingz/gameplay";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { removeEntity } from "bitecs";
+import { addComponent, addEntity, removeEntity } from "bitecs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("#app not found");
@@ -134,6 +143,12 @@ let jumpIndex = 0;
 let starfield: THREE.Points | null = null;
 let shipEid: number | null = null;
 let shipMesh: THREE.Object3D | null = null;
+const projectileMeshes = new Map<number, THREE.Mesh>();
+const targetMeshes = new Map<number, THREE.Object3D>();
+let targetEids: number[] = [];
+const targetOrbits = new Map<number, { radius: number; speed: number; phase: number; height: number }>();
+let flightTimeSec = 0;
+const boltForward = new THREE.Vector3(0, 0, 1);
 
 function buildLocalStarfield(seed: bigint) {
   if (starfield) {
@@ -186,12 +201,161 @@ function buildShipMesh() {
   return group;
 }
 
+function spawnTrainingDrones(seed: bigint) {
+  // remove previous drones
+  for (const eid of targetEids) {
+    removeEntity(game.world, eid);
+  }
+  for (const mesh of targetMeshes.values()) {
+    scene.remove(mesh);
+    disposeObject(mesh);
+  }
+  targetEids = [];
+  targetMeshes.clear();
+  targetOrbits.clear();
+
+  const count = 3;
+  for (let i = 0; i < count; i++) {
+    const drng = createRng(deriveSeed(seed, "drone", i));
+    const pos = new THREE.Vector3(
+      drng.range(-180, 180),
+      drng.range(-80, 80),
+      drng.range(-900, -350)
+    );
+
+    const eid = addEntity(game.world);
+    addComponent(game.world, Transform, eid);
+    addComponent(game.world, Velocity, eid);
+    addComponent(game.world, Targetable, eid);
+    addComponent(game.world, Health, eid);
+    addComponent(game.world, HitRadius, eid);
+
+    Transform.x[eid] = pos.x;
+    Transform.y[eid] = pos.y;
+    Transform.z[eid] = pos.z;
+    Transform.qx[eid] = 0;
+    Transform.qy[eid] = 0;
+    Transform.qz[eid] = 0;
+    Transform.qw[eid] = 1;
+
+    Velocity.vx[eid] = 0;
+    Velocity.vy[eid] = 0;
+    Velocity.vz[eid] = 0;
+
+    Health.hp[eid] = 30;
+    Health.maxHp[eid] = 30;
+    HitRadius.r[eid] = 8;
+
+    const mesh = new THREE.Mesh(
+      new THREE.TetrahedronGeometry(6),
+      new THREE.MeshStandardMaterial({
+        color: 0xffaa66,
+        emissive: 0x331100,
+        metalness: 0.2,
+        roughness: 0.7
+      })
+    );
+    mesh.position.copy(pos);
+    scene.add(mesh);
+    targetEids.push(eid);
+    targetMeshes.set(eid, mesh);
+    targetOrbits.set(eid, {
+      radius: drng.range(90, 220),
+      speed: drng.range(0.2, 0.5),
+      phase: drng.range(0, Math.PI * 2),
+      height: drng.range(-40, 40)
+    });
+  }
+}
+
+function updateDroneAI(dt: number) {
+  flightTimeSec += dt;
+  const player = getPlayerShip(game.world);
+  const cx = player !== null ? (Transform.x[player] ?? 0) : 0;
+  const cy = player !== null ? (Transform.y[player] ?? 0) : 0;
+  const cz = player !== null ? (Transform.z[player] ?? 0) : 0;
+
+  for (const [eid, orbit] of targetOrbits) {
+    if (!targetMeshes.has(eid)) continue;
+    const a = orbit.phase + flightTimeSec * orbit.speed;
+    const x = cx + Math.cos(a) * orbit.radius;
+    const z = cz + Math.sin(a) * orbit.radius;
+    const y = cy + orbit.height;
+    Transform.x[eid] = x;
+    Transform.y[eid] = y;
+    Transform.z[eid] = z;
+  }
+}
+
+function syncTargets() {
+  const aliveTargets = getTargetables(game.world);
+  const aliveSet = new Set(aliveTargets);
+
+  for (const [eid, mesh] of targetMeshes) {
+    if (aliveSet.has(eid)) continue;
+    scene.remove(mesh);
+    disposeObject(mesh);
+    targetMeshes.delete(eid);
+  }
+
+  targetEids = aliveTargets;
+  for (const eid of aliveTargets) {
+    const mesh = targetMeshes.get(eid);
+    if (!mesh) continue;
+    mesh.position.set(Transform.x[eid] ?? 0, Transform.y[eid] ?? 0, Transform.z[eid] ?? 0);
+  }
+}
+
+function syncProjectiles() {
+  const ps = getProjectiles(game.world);
+  const alive = new Set(ps);
+
+  for (const eid of ps) {
+    let mesh = projectileMeshes.get(eid);
+    if (!mesh) {
+      mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.3, 0.3, 6, 6),
+        new THREE.MeshBasicMaterial({ color: 0xff4444 })
+      );
+      mesh.rotation.x = Math.PI / 2;
+      scene.add(mesh);
+      projectileMeshes.set(eid, mesh);
+    }
+    mesh.position.set(Transform.x[eid] ?? 0, Transform.y[eid] ?? 0, Transform.z[eid] ?? 0);
+
+    const dv = new THREE.Vector3(Velocity.vx[eid] ?? 0, Velocity.vy[eid] ?? 0, Velocity.vz[eid] ?? 0);
+    if (dv.lengthSq() > 1e-4) {
+      dv.normalize();
+      mesh.quaternion.setFromUnitVectors(boltForward, dv);
+    }
+  }
+
+  for (const [eid, mesh] of projectileMeshes) {
+    if (alive.has(eid)) continue;
+    scene.remove(mesh);
+    disposeObject(mesh);
+    projectileMeshes.delete(eid);
+  }
+}
+
+function disposeObject(obj: THREE.Object3D) {
+  obj.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (mesh.geometry) mesh.geometry.dispose();
+    const mat = mesh.material as any;
+    if (mat && typeof mat.dispose === "function") mat.dispose();
+  });
+}
+
 function setupFlightHud() {
   hud.className = "hud-xwing";
   hud.innerHTML = `
     <div class="hud-reticle">
       <div class="reticle-circle"></div>
       <div class="reticle-cross"></div>
+    </div>
+    <div class="hud-top">
+      <div id="hud-target" class="hud-target">NO TARGET</div>
     </div>
     <div class="hud-left">
       <div class="hud-label">SPD</div>
@@ -207,6 +371,7 @@ function setupFlightHud() {
     </div>
     <div class="hud-bottom">
       <div class="hud-label">HYPERSPACE: H</div>
+      <div class="hud-label">TARGET: T</div>
       <div class="hud-label">MAP: M</div>
       <div class="hud-label">BOOST: SHIFT</div>
       <div class="hud-label">BRAKE: X</div>
@@ -218,6 +383,7 @@ function enterFlightMode(system: SystemDef) {
   mode = "flight";
   currentSystem = system;
   jumpIndex = 0;
+  flightTimeSec = 0;
 
   controls.enabled = false;
   scene.clear();
@@ -228,6 +394,12 @@ function enterFlightMode(system: SystemDef) {
   scene.add(new THREE.PointLight(0x88aaff, 0.6, 0, 2));
 
   buildLocalStarfield(system.seed);
+
+  // Clear any leftover projectiles from prior flights.
+  for (const eid of projectileMeshes.keys()) {
+    removeEntity(game.world, eid);
+  }
+  projectileMeshes.clear();
 
   if (shipEid !== null) {
     removeEntity(game.world, shipEid);
@@ -242,6 +414,8 @@ function enterFlightMode(system: SystemDef) {
   shipMesh.scale.setScalar(2.5);
   scene.add(shipMesh);
 
+  spawnTrainingDrones(system.seed);
+
   camera.position.set(0, 6, 20);
   camera.lookAt(0, 0, -50);
 
@@ -252,6 +426,23 @@ function enterFlightMode(system: SystemDef) {
 function enterMapMode() {
   mode = "map";
   controls.enabled = true;
+
+  // Remove flight-only ECS entities and meshes.
+  for (const eid of projectileMeshes.keys()) {
+    removeEntity(game.world, eid);
+  }
+  projectileMeshes.clear();
+
+  for (const eid of targetEids) {
+    removeEntity(game.world, eid);
+  }
+  targetEids = [];
+  for (const mesh of targetMeshes.values()) {
+    disposeObject(mesh);
+  }
+  targetMeshes.clear();
+  targetOrbits.clear();
+
   scene.clear();
   scene.add(new THREE.AmbientLight(0xffffff, 0.8));
   camera.position.set(0, 200, 600);
@@ -263,6 +454,7 @@ function updateFlightHud() {
   const throttleEl = document.querySelector<HTMLDivElement>("#hud-throttle");
   const systemEl = document.querySelector<HTMLDivElement>("#hud-system");
   const factionEl = document.querySelector<HTMLDivElement>("#hud-faction");
+  const targetEl = document.querySelector<HTMLDivElement>("#hud-target");
 
   if (!shipEid) return;
   const v =
@@ -273,6 +465,20 @@ function updateFlightHud() {
   if (throttleEl) throttleEl.textContent = `${Math.round(t * 100)}%`;
   if (systemEl && currentSystem) systemEl.textContent = currentSystem.id;
   if (factionEl && currentSystem) factionEl.textContent = currentSystem.controllingFaction;
+
+  if (targetEl) {
+    const teid = Targeting.targetEid[shipEid] ?? -1;
+    if (teid >= 0) {
+      const dx = (Transform.x[teid] ?? 0) - (Transform.x[shipEid] ?? 0);
+      const dy = (Transform.y[teid] ?? 0) - (Transform.y[shipEid] ?? 0);
+      const dz = (Transform.z[teid] ?? 0) - (Transform.z[shipEid] ?? 0);
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const hp = Health.hp[teid] ?? 0;
+      targetEl.textContent = `TGT ${teid}  ${dist.toFixed(0)}m  HP ${hp.toFixed(0)}`;
+    } else {
+      targetEl.textContent = "NO TARGET";
+    }
+  }
 }
 
 function hyperspaceJump() {
@@ -405,7 +611,10 @@ game.setTick((dt) => {
 
   // Flight mode
   input.update();
+  targetingSystem(game.world, input.state);
   spaceflightSystem(game.world, input.state, dt);
+  weaponSystem(game.world, input.state, dt);
+  projectileSystem(game.world, dt);
 
   const player = getPlayerShip(game.world);
   if (player !== null && shipMesh) {
@@ -419,6 +628,13 @@ game.setTick((dt) => {
     camera.position.copy(pos).add(camOffset);
     camera.lookAt(pos.clone().add(lookOffset));
   }
+
+  updateDroneAI(dt);
+  syncTargets();
+  if (targetEids.length === 0 && currentSystem) {
+    spawnTrainingDrones(currentSystem.seed);
+  }
+  syncProjectiles();
 
   if (input.state.hyperspace) hyperspaceJump();
   if (input.state.toggleMap) enterMapMode();

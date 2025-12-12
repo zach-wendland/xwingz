@@ -29,5 +29,38 @@ export const Ship = defineComponent({
   turnRate: Types.f32    // rad/sec
 });
 
-export const PlayerControlled = defineComponent();
+// Simple laser weapon mounted on a ship.
+export const LaserWeapon = defineComponent({
+  cooldown: Types.f32,           // seconds between shots
+  cooldownRemaining: Types.f32,  // seconds until next shot
+  projectileSpeed: Types.f32,    // units/sec
+  damage: Types.f32              // per hit
+});
 
+// Projectile entity.
+export const Projectile = defineComponent({
+  life: Types.f32,   // seconds remaining
+  owner: Types.i32,  // eid of firing ship
+  damage: Types.f32
+});
+
+export const Health = defineComponent({
+  hp: Types.f32,
+  maxHp: Types.f32
+});
+
+export const HitRadius = defineComponent({
+  r: Types.f32
+});
+
+export const AIControlled = defineComponent();
+
+// Marks an entity as targetable by players/AI.
+export const Targetable = defineComponent();
+
+// Player/AI targeting state.
+export const Targeting = defineComponent({
+  targetEid: Types.i32 // -1 when none
+});
+
+export const PlayerControlled = defineComponent();

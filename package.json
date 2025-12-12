@@ -15,9 +15,11 @@
     "test": "npm --workspaces run test",
     "lint": "npm --workspaces run lint",
     "format": "npm --workspaces run format",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "typescript": "^5.7.2"
   }
 }

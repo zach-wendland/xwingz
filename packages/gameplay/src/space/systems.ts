@@ -19,6 +19,20 @@ import {
 } from "./components";
 import type { SpaceInputState } from "./input";
 
+export type ImpactEvent = {
+  x: number;
+  y: number;
+  z: number;
+  team: number; // team of shooter, -1 unknown
+  killed: 0 | 1;
+};
+
+const impactEvents: ImpactEvent[] = [];
+
+export function consumeImpactEvents(): ImpactEvent[] {
+  return impactEvents.splice(0, impactEvents.length);
+}
+
 export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: number; accel: number; turnRate: number }>) {
   const eid = addEntity(world);
   addComponent(world, Transform, eid);
@@ -87,6 +101,7 @@ const combatantQuery = defineQuery([Health, Transform, Team]);
 
 const tmpQ = new Quaternion();
 const tmpEuler = new Euler();
+const tmpDq = new Quaternion();
 const tmpForward = new Vector3();
 const tmpVel = new Vector3();
 const tmpInvQ = new Quaternion();
@@ -95,6 +110,22 @@ const tmpLocal = new Vector3();
 const tmpTargetVel = new Vector3();
 const tmpSep = new Vector3();
 const tmpLateral = new Vector3();
+const tmpShotDir = new Vector3();
+const tmpShotQ = new Quaternion();
+const tmpMount = new Vector3();
+const tmpMountWorld = new Vector3();
+const baseForward = new Vector3(0, 0, -1);
+
+const XWING_MOUNTS: Array<[number, number, number]> = [
+  [-6.2, 3.5, -6.0],
+  [6.2, 3.5, -6.0],
+  [-6.2, -3.5, -6.0],
+  [6.2, -3.5, -6.0]
+];
+const TIE_MOUNTS: Array<[number, number, number]> = [
+  [-0.65, 0.0, -1.35],
+  [0.65, 0.0, -1.35]
+];
 
 export function spaceflightSystem(world: IWorld, input: SpaceInputState, dt: number) {
   const ships = shipQuery(world);
@@ -127,8 +158,8 @@ export function spaceflightSystem(world: IWorld, input: SpaceInputState, dt: num
       (AngularVelocity.wz[eid] ?? 0) * dt,
       "XYZ"
     );
-    const dq = new Quaternion().setFromEuler(tmpEuler);
-    tmpQ.multiply(dq).normalize();
+    tmpDq.setFromEuler(tmpEuler);
+    tmpQ.multiply(tmpDq).normalize();
     Transform.qx[eid] = tmpQ.x;
     Transform.qy[eid] = tmpQ.y;
     Transform.qz[eid] = tmpQ.z;
@@ -174,43 +205,91 @@ export function spaceflightSystem(world: IWorld, input: SpaceInputState, dt: num
   }
 }
 
-function fireLaser(world: IWorld, shooterEid: number) {
-  const pid = addEntity(world);
-  addComponent(world, Transform, pid);
-  addComponent(world, Velocity, pid);
-  addComponent(world, Projectile, pid);
+function fireLaser(world: IWorld, shooterEid: number, targetEid: number) {
+  const sx = Transform.x[shooterEid] ?? 0;
+  const sy = Transform.y[shooterEid] ?? 0;
+  const sz = Transform.z[shooterEid] ?? 0;
 
   const qx = Transform.qx[shooterEid] ?? 0;
   const qy = Transform.qy[shooterEid] ?? 0;
   const qz = Transform.qz[shooterEid] ?? 0;
   const qw = Transform.qw[shooterEid] ?? 1;
-  Transform.qx[pid] = qx;
-  Transform.qy[pid] = qy;
-  Transform.qz[pid] = qz;
-  Transform.qw[pid] = qw;
-
   tmpQ.set(qx, qy, qz, qw);
   tmpForward.set(0, 0, -1).applyQuaternion(tmpQ).normalize();
 
-  const offset = 3;
-  const sx = Transform.x[shooterEid] ?? 0;
-  const sy = Transform.y[shooterEid] ?? 0;
-  const sz = Transform.z[shooterEid] ?? 0;
-  Transform.x[pid] = sx + tmpForward.x * offset;
-  Transform.y[pid] = sy + tmpForward.y * offset;
-  Transform.z[pid] = sz + tmpForward.z * offset;
+  const myTeam = hasComponent(world, Team, shooterEid) ? (Team.id[shooterEid] ?? 0) : 0;
+  let shotDir = tmpForward;
 
+  // Mild aim assist toward lead point when a target is selected and roughly in front.
+  if (targetEid >= 0 && hasComponent(world, Transform, targetEid) && hasComponent(world, Team, targetEid)) {
+    const theirTeam = Team.id[targetEid] ?? -1;
+    if (theirTeam !== myTeam) {
+      const tx = Transform.x[targetEid] ?? 0;
+      const ty = Transform.y[targetEid] ?? 0;
+      const tz = Transform.z[targetEid] ?? 0;
+      const dx = tx - sx;
+      const dy = ty - sy;
+      const dz = tz - sz;
+      const dist2 = dx * dx + dy * dy + dz * dz;
+      const projSpeed = LaserWeapon.projectileSpeed[shooterEid] ?? 900;
+      if (dist2 < 1400 * 1400 && projSpeed > 1e-3) {
+        const tvx = hasComponent(world, Velocity, targetEid) ? (Velocity.vx[targetEid] ?? 0) : 0;
+        const tvy = hasComponent(world, Velocity, targetEid) ? (Velocity.vy[targetEid] ?? 0) : 0;
+        const tvz = hasComponent(world, Velocity, targetEid) ? (Velocity.vz[targetEid] ?? 0) : 0;
+        const svx = Velocity.vx[shooterEid] ?? 0;
+        const svy = Velocity.vy[shooterEid] ?? 0;
+        const svz = Velocity.vz[shooterEid] ?? 0;
+        const rvx = tvx - svx;
+        const rvy = tvy - svy;
+        const rvz = tvz - svz;
+        const dist = Math.sqrt(dist2);
+        const leadTime = computeInterceptTime(dx, dy, dz, rvx, rvy, rvz, projSpeed) ?? dist / projSpeed;
+        tmpShotDir.set(dx + rvx * leadTime, dy + rvy * leadTime, dz + rvz * leadTime).normalize();
+
+        const cone = hasComponent(world, PlayerControlled, shooterEid) ? 0.84 : 0.9;
+        if (tmpForward.dot(tmpShotDir) >= cone) {
+          shotDir = tmpShotDir;
+        }
+      }
+    }
+  }
+
+  tmpShotQ.setFromUnitVectors(baseForward, shotDir);
+
+  const mounts = myTeam === 0 ? XWING_MOUNTS : TIE_MOUNTS;
+  const totalDamage = LaserWeapon.damage[shooterEid] ?? 10;
+  const damagePer = totalDamage / mounts.length;
   const projSpeed = LaserWeapon.projectileSpeed[shooterEid] ?? 900;
   const svx = Velocity.vx[shooterEid] ?? 0;
   const svy = Velocity.vy[shooterEid] ?? 0;
   const svz = Velocity.vz[shooterEid] ?? 0;
-  Velocity.vx[pid] = svx + tmpForward.x * projSpeed;
-  Velocity.vy[pid] = svy + tmpForward.y * projSpeed;
-  Velocity.vz[pid] = svz + tmpForward.z * projSpeed;
 
-  Projectile.life[pid] = 2.5;
-  Projectile.owner[pid] = shooterEid;
-  Projectile.damage[pid] = LaserWeapon.damage[shooterEid] ?? 10;
+  for (const [mx, my, mz] of mounts) {
+    const pid = addEntity(world);
+    addComponent(world, Transform, pid);
+    addComponent(world, Velocity, pid);
+    addComponent(world, Projectile, pid);
+
+    Transform.qx[pid] = tmpShotQ.x;
+    Transform.qy[pid] = tmpShotQ.y;
+    Transform.qz[pid] = tmpShotQ.z;
+    Transform.qw[pid] = tmpShotQ.w;
+
+    tmpMount.set(mx, my, mz).applyQuaternion(tmpQ);
+    tmpMountWorld.set(sx + tmpMount.x, sy + tmpMount.y, sz + tmpMount.z);
+
+    Transform.x[pid] = tmpMountWorld.x + shotDir.x * 1.2;
+    Transform.y[pid] = tmpMountWorld.y + shotDir.y * 1.2;
+    Transform.z[pid] = tmpMountWorld.z + shotDir.z * 1.2;
+
+    Velocity.vx[pid] = svx + shotDir.x * projSpeed;
+    Velocity.vy[pid] = svy + shotDir.y * projSpeed;
+    Velocity.vz[pid] = svz + shotDir.z * projSpeed;
+
+    Projectile.life[pid] = 2.2;
+    Projectile.owner[pid] = shooterEid;
+    Projectile.damage[pid] = damagePer;
+  }
 }
 
 export function weaponSystem(world: IWorld, input: SpaceInputState, dt: number) {
@@ -228,7 +307,7 @@ export function weaponSystem(world: IWorld, input: SpaceInputState, dt: number) 
     if (!input.firePrimary || cdRem > 0) continue;
     LaserWeapon.cooldownRemaining[eid] = cd;
 
-    fireLaser(world, eid);
+    fireLaser(world, eid, Targeting.targetEid[eid] ?? -1);
   }
 }
 
@@ -274,7 +353,7 @@ export function aiWeaponSystem(world: IWorld, dt: number) {
     if (dot < 0.9) continue;
 
     LaserWeapon.cooldownRemaining[eid] = cd;
-    fireLaser(world, eid);
+    fireLaser(world, eid, tid);
   }
 }
 
@@ -327,7 +406,9 @@ export function projectileSystem(world: IWorld, dt: number) {
           Health.hp[tid] = (Health.hp[tid] ?? 0) - dmg;
         }
         removeEntity(world, eid);
-        if ((Health.hp[tid] ?? 0) <= 0) {
+        const killed = (Health.hp[tid] ?? 0) <= 0;
+        impactEvents.push({ x: px, y: py, z: pz, team: ownerTeam, killed: killed ? 1 : 0 });
+        if (killed) {
           removeEntity(world, tid);
         }
         break;
@@ -356,14 +437,25 @@ export function targetingSystem(world: IWorld, input: SpaceInputState) {
   const py = Transform.y[pid] ?? 0;
   const pz = Transform.z[pid] ?? 0;
 
+  tmpQ.set(
+    Transform.qx[pid] ?? 0,
+    Transform.qy[pid] ?? 0,
+    Transform.qz[pid] ?? 0,
+    Transform.qw[pid] ?? 1
+  );
+  tmpForward.set(0, 0, -1).applyQuaternion(tmpQ).normalize();
+
   const sorted = hostiles
     .map((eid) => {
       const dx = (Transform.x[eid] ?? 0) - px;
       const dy = (Transform.y[eid] ?? 0) - py;
       const dz = (Transform.z[eid] ?? 0) - pz;
-      return { eid, d2: dx * dx + dy * dy + dz * dz };
+      const d2 = dx * dx + dy * dy + dz * dz;
+      const inv = 1 / Math.max(1e-6, Math.sqrt(d2));
+      const dot = tmpForward.dot(tmpDesired.set(dx * inv, dy * inv, dz * inv));
+      return { eid, dot, d2 };
     })
-    .sort((a, b) => a.d2 - b.d2)
+    .sort((a, b) => (b.dot - a.dot) || (a.d2 - b.d2))
     .map((t) => t.eid);
 
   const current = Targeting.targetEid[pid] ?? -1;

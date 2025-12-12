@@ -10,6 +10,11 @@ export function createBasicRenderer(canvas: HTMLCanvasElement): RendererBundle {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x05060b);
@@ -32,4 +37,3 @@ export function createBasicRenderer(canvas: HTMLCanvasElement): RendererBundle {
 
   return { renderer, scene, camera };
 }
-

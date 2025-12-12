@@ -17,6 +17,7 @@ import {
   AngularVelocity,
   computeInterceptTime,
   createSpaceInput,
+  type SpaceInputState,
   dogfightAISystem,
   getPlayerShip,
   getProjectiles,
@@ -28,11 +29,13 @@ import {
   weaponSystem,
   projectileSystem,
   shieldRegenSystem,
+  consumeImpactEvents,
   FighterBrain,
   Shield,
   Health,
   HitRadius,
   Team,
+  Projectile,
   LaserWeapon,
   Ship,
   Targetable,
@@ -94,33 +97,121 @@ let mode: Mode = "map";
 // ---- Galaxy map state ----
 let centerSector: Vec3i = [0, 0, 0];
 let radius = 2;
-let systemsPoints: THREE.Points | null = null;
+let systemsPlanets: THREE.InstancedMesh | null = null;
+let systemsAtmos: THREE.InstancedMesh | null = null;
+let mapStarfield: THREE.Points | null = null;
 let selectedSystem: SystemDef | null = null;
 let selectedMarker: THREE.Mesh | null = null;
 const GALAXY_SCALE = 1000;
 
-const factionColors: Record<string, number> = {
-  republic: 0x5aa2ff,
-  empire: 0xff4a4a,
-  hutts: 0x7cff5a,
-  pirates: 0xffb347,
-  independent: 0xb9b9b9,
-  sith_cult: 0xad5aff,
-  jedi_remnant: 0x77ffd4
-};
-
 const raycaster = new THREE.Raycaster();
 raycaster.params.Points.threshold = 25; // forgiving selection radius
 const mouse = new THREE.Vector2();
+const tmpMapMat = new THREE.Matrix4();
+
+type PlanetStyleId = "desert" | "ice" | "jungle" | "ocean" | "volcanic" | "city" | "gas" | "barren" | "mystic";
+type PlanetStyle = { id: PlanetStyleId; base: number; atmos: number; roughness: number };
+const PLANET_STYLES: PlanetStyle[] = [
+  { id: "desert", base: 0xcaa26a, atmos: 0xffd19a, roughness: 0.95 },
+  { id: "ice", base: 0xa6c9ff, atmos: 0xcfe6ff, roughness: 0.9 },
+  { id: "jungle", base: 0x2f6b42, atmos: 0x7cffc0, roughness: 0.98 },
+  { id: "ocean", base: 0x1a4ea8, atmos: 0x66aaff, roughness: 0.75 },
+  { id: "volcanic", base: 0x3b2622, atmos: 0xff7744, roughness: 0.95 },
+  { id: "city", base: 0x6e7786, atmos: 0xaad4ff, roughness: 0.65 },
+  { id: "gas", base: 0x7c61c8, atmos: 0xd2b7ff, roughness: 0.6 },
+  { id: "barren", base: 0x6c5a4e, atmos: 0xb9b9b9, roughness: 0.98 },
+  { id: "mystic", base: 0x3b1c6b, atmos: 0xad5aff, roughness: 0.7 }
+];
+
+function pickPlanetStyle(sys: SystemDef): PlanetStyle {
+  if (sys.id === "yavin_4") return PLANET_STYLES.find((s) => s.id === "jungle")!;
+  const tags = new Set(sys.tags ?? []);
+  if (tags.has("jungle")) return PLANET_STYLES.find((s) => s.id === "jungle")!;
+  if (tags.has("haunted") || tags.has("anomaly")) return PLANET_STYLES.find((s) => s.id === "mystic")!;
+
+  if (sys.starClass === "black_hole" || sys.starClass === "neutron") return PLANET_STYLES.find((s) => s.id === "mystic")!;
+  if (sys.controllingFaction === "empire") return PLANET_STYLES.find((s) => s.id === "city")!;
+  if (sys.archetypeId?.includes("trade") || sys.archetypeId?.includes("core")) return PLANET_STYLES.find((s) => s.id === "city")!;
+  if (sys.archetypeId?.includes("dead")) return PLANET_STYLES.find((s) => s.id === "ice")!;
+
+  const rng = createRng(deriveSeed(sys.seed, "map_planet_style"));
+  const table: PlanetStyleId[] = ["desert", "ice", "jungle", "ocean", "volcanic", "barren", "gas"];
+  const pick = table[Math.floor(rng.range(0, table.length))] ?? "barren";
+  return PLANET_STYLES.find((s) => s.id === pick)!;
+}
+
+function createMapNoiseTexture(seed: bigint) {
+  const w = 256;
+  const h = 128;
+  const smallW = 64;
+  const smallH = 32;
+  const rng = createRng(seed);
+
+  const small = document.createElement("canvas");
+  small.width = smallW;
+  small.height = smallH;
+  const sctx = small.getContext("2d");
+  if (!sctx) throw new Error("noise ctx missing");
+  const img = sctx.createImageData(smallW, smallH);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = Math.floor(255 * (0.45 + rng.range(-0.25, 0.25)));
+    img.data[i + 0] = v;
+    img.data[i + 1] = v;
+    img.data[i + 2] = v;
+    img.data[i + 3] = 255;
+  }
+  sctx.putImageData(img, 0, 0);
+
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) throw new Error("noise ctx missing");
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(small, 0, 0, w, h);
+
+  // Add some large-scale banding and storms to read as planet surface.
+  ctx.globalCompositeOperation = "overlay";
+  for (let i = 0; i < 6; i++) {
+    const y = rng.range(0, h);
+    const bandH = rng.range(10, 28);
+    ctx.fillStyle = `rgba(255,255,255,${rng.range(0.05, 0.12)})`;
+    ctx.fillRect(0, y, w, bandH);
+  }
+  ctx.globalCompositeOperation = "source-over";
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.repeat.set(2, 1);
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const mapPlanetNoise = createMapNoiseTexture(deriveSeed(globalSeed, "map_planet_noise_v0"));
 
 function rebuildGalaxy() {
   selectedSystem = null;
   if (selectedMarker) selectedMarker.visible = false;
-  if (systemsPoints) {
-    scene.remove(systemsPoints);
-    systemsPoints.geometry.dispose();
-    (systemsPoints.material as THREE.Material).dispose();
-    systemsPoints = null;
+  if (mapStarfield) {
+    scene.remove(mapStarfield);
+    mapStarfield.geometry.dispose();
+    (mapStarfield.material as THREE.Material).dispose();
+    mapStarfield = null;
+  }
+  if (systemsPlanets) {
+    scene.remove(systemsPlanets);
+    systemsPlanets.geometry.dispose();
+    (systemsPlanets.material as THREE.Material).dispose();
+    systemsPlanets = null;
+  }
+  if (systemsAtmos) {
+    scene.remove(systemsAtmos);
+    systemsAtmos.geometry.dispose();
+    (systemsAtmos.material as THREE.Material).dispose();
+    systemsAtmos = null;
   }
 
   const sectors = cache.sectorsInRadius(centerSector, radius);
@@ -128,37 +219,105 @@ function rebuildGalaxy() {
     sector.systems.map((_, i) => cache.system(sector.coord, i))
   );
 
-  const positions = new Float32Array(systems.length * 3);
-  const colors = new Float32Array(systems.length * 3);
   const scale = GALAXY_SCALE;
 
-  systems.forEach((sys, idx) => {
-    positions[idx * 3 + 0] = sys.galaxyPos[0] * scale;
-    positions[idx * 3 + 1] = sys.galaxyPos[1] * scale;
-    positions[idx * 3 + 2] = sys.galaxyPos[2] * scale;
-
-    const c = factionColors[sys.controllingFaction] ?? 0xffffff;
-    colors[idx * 3 + 0] = ((c >> 16) & 255) / 255;
-    colors[idx * 3 + 1] = ((c >> 8) & 255) / 255;
-    colors[idx * 3 + 2] = (c & 255) / 255;
+  const planetGeo = new THREE.SphereGeometry(1, 22, 22);
+  const atmosGeo = new THREE.SphereGeometry(1.05, 18, 18);
+  const planetMat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.9,
+    metalness: 0.0
+  });
+  planetMat.bumpMap = mapPlanetNoise;
+  planetMat.bumpScale = 0.55;
+  planetMat.roughnessMap = mapPlanetNoise;
+  const atmosMat = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.35,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.BackSide
   });
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  systemsPlanets = new THREE.InstancedMesh(planetGeo, planetMat, systems.length);
+  systemsAtmos = new THREE.InstancedMesh(atmosGeo, atmosMat, systems.length);
+  const planets = systemsPlanets;
+  const atmos = systemsAtmos;
 
-  const mat = new THREE.PointsMaterial({ vertexColors: true, size: 6, sizeAttenuation: true });
-  systemsPoints = new THREE.Points(geo, mat);
-  systemsPoints.userData.systems = systems;
-  scene.add(systemsPoints);
+  const radii: number[] = new Array(systems.length);
+  const tmpPos = new THREE.Vector3();
+  const tmpQ = new THREE.Quaternion();
+  const tmpS = new THREE.Vector3();
+  const tmpColor = new THREE.Color();
+
+  systems.forEach((sys, idx) => {
+    tmpPos.set(sys.galaxyPos[0] * scale, sys.galaxyPos[1] * scale, sys.galaxyPos[2] * scale);
+
+    const rng = createRng(deriveSeed(sys.seed, "map_planet_v0"));
+    const style = pickPlanetStyle(sys);
+    const r = sys.id === "yavin_4" ? 22 : rng.range(10, 20);
+    radii[idx] = r;
+
+    tmpQ.identity();
+    tmpS.setScalar(r);
+    tmpMapMat.compose(tmpPos, tmpQ, tmpS);
+    planets.setMatrixAt(idx, tmpMapMat);
+
+    tmpS.setScalar(r * 1.08);
+    tmpMapMat.compose(tmpPos, tmpQ, tmpS);
+    atmos.setMatrixAt(idx, tmpMapMat);
+
+    tmpColor.setHex(style.base);
+    tmpColor.offsetHSL(rng.range(-0.03, 0.03), rng.range(-0.06, 0.06), rng.range(-0.08, 0.08));
+    planets.setColorAt(idx, tmpColor);
+
+    tmpColor.setHex(style.atmos);
+    tmpColor.offsetHSL(rng.range(-0.04, 0.04), rng.range(-0.08, 0.08), rng.range(-0.08, 0.1));
+    atmos.setColorAt(idx, tmpColor);
+  });
+
+  systemsPlanets.instanceMatrix.needsUpdate = true;
+  systemsAtmos.instanceMatrix.needsUpdate = true;
+  if (systemsPlanets.instanceColor) systemsPlanets.instanceColor.needsUpdate = true;
+  if (systemsAtmos.instanceColor) systemsAtmos.instanceColor.needsUpdate = true;
+
+  systemsPlanets.userData.systems = systems;
+  systemsPlanets.userData.radii = radii;
+  systemsAtmos.userData.systems = systems;
+  systemsAtmos.userData.radii = radii;
+
+  // Backdrop stars for depth (not interactive).
+  {
+    const rng = createRng(deriveSeed(globalSeed, "map_starfield_v0"));
+    const count = 2600;
+    const positions = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const r = 2200 + rng.range(0, 9800);
+      const theta = rng.range(0, Math.PI * 2);
+      const phi = Math.acos(rng.range(-1, 1));
+      positions[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
+      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      positions[i * 3 + 2] = r * Math.cos(phi);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({ color: 0x9ab7ff, size: 1.6, sizeAttenuation: true, transparent: true, opacity: 0.85 });
+    mapStarfield = new THREE.Points(geo, mat);
+    scene.add(mapStarfield);
+  }
+
+  scene.add(systemsAtmos);
+  scene.add(systemsPlanets);
 
   if (!selectedMarker) {
-    const mGeo = new THREE.SphereGeometry(14, 10, 10);
-    const mMat = new THREE.MeshBasicMaterial({ color: 0x7cff7c, wireframe: true });
+    const mGeo = new THREE.SphereGeometry(1, 14, 14);
+    const mMat = new THREE.MeshBasicMaterial({ color: 0x7cff7c, wireframe: true, transparent: true, opacity: 0.85 });
     selectedMarker = new THREE.Mesh(mGeo, mMat);
     selectedMarker.visible = false;
     scene.add(selectedMarker);
   }
+  if (selectedMarker && selectedMarker.parent !== scene) scene.add(selectedMarker);
 
   hud.className = "hud-map";
   hud.innerText =
@@ -484,11 +643,65 @@ const tmpCamOffset = new THREE.Vector3();
 const tmpLookOffset = new THREE.Vector3();
 const tmpLookAt = new THREE.Vector3();
 const tmpExplosionPos = new THREE.Vector3();
+const tmpProjVel = new THREE.Vector3();
+const camSmoothPos = new THREE.Vector3();
+const camSmoothLook = new THREE.Vector3();
+let camInit = false;
 
-type ExplosionFx = { mesh: THREE.Mesh; age: number; duration: number };
+type ExplosionFx = { mesh: THREE.Mesh; age: number; duration: number; maxScale: number };
 const explosions: ExplosionFx[] = [];
 const explosionPool: ExplosionFx[] = [];
 const explosionGeo = new THREE.SphereGeometry(1, 14, 14);
+
+function createGlowTexture() {
+  const c = document.createElement("canvas");
+  c.width = 64;
+  c.height = 64;
+  const ctx = c.getContext("2d");
+  if (!ctx) throw new Error("canvas ctx missing");
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.2, "rgba(255,255,255,0.8)");
+  g.addColorStop(0.5, "rgba(255,255,255,0.25)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const glowTex = createGlowTexture();
+const boltGeo = new THREE.CylinderGeometry(0.16, 0.16, 10, 6);
+const boltMatFriendly = new THREE.MeshBasicMaterial({
+  color: 0xff4444,
+  transparent: true,
+  opacity: 0.95,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const boltMatEnemy = new THREE.MeshBasicMaterial({
+  color: 0x55ff66,
+  transparent: true,
+  opacity: 0.95,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+function makeBoltGlow(color: number) {
+  const mat = new THREE.SpriteMaterial({
+    map: glowTex,
+    color,
+    transparent: true,
+    opacity: 0.65,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.setScalar(6.5);
+  sprite.renderOrder = 9;
+  return sprite;
+}
 
 function buildLocalStarfield(seed: bigint) {
   if (starfield) {
@@ -628,7 +841,7 @@ function buildYavinPlanet(seed: bigint) {
   groundMesh = new THREE.Mesh(geo, mat);
   groundMesh.rotation.x = -Math.PI / 2;
   groundMesh.position.y = terrainParams.yOffset;
-  groundMesh.receiveShadow = false;
+  groundMesh.receiveShadow = true;
   scene.add(groundMesh);
 
   // Light tree scatter around the temple area.
@@ -636,10 +849,14 @@ function buildYavinPlanet(seed: bigint) {
   const trunkGeo = new THREE.CylinderGeometry(0.9, 1.3, 14, 6);
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 1.0 });
   treeTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
+  treeTrunks.castShadow = true;
+  treeTrunks.receiveShadow = true;
 
   const canopyGeo = new THREE.ConeGeometry(6.5, 18, 8);
   const canopyMat = new THREE.MeshStandardMaterial({ color: 0x1b5a34, roughness: 1.0 });
   treeCanopies = new THREE.InstancedMesh(canopyGeo, canopyMat, treeCount);
+  treeCanopies.castShadow = true;
+  treeCanopies.receiveShadow = true;
 
   for (let i = 0; i < treeCount; i++) {
     let x = rng.range(-1800, 1800);
@@ -668,31 +885,116 @@ function buildYavinPlanet(seed: bigint) {
 
   baseMesh = buildGreatTemple();
   baseMesh.position.y = yavinTerrainHeight(0, 0);
+  baseMesh.traverse((c) => {
+    c.castShadow = true;
+    c.receiveShadow = true;
+  });
   scene.add(baseMesh);
 }
 
 function buildShipMesh() {
   const group = new THREE.Group();
 
-  const bodyGeo = new THREE.CylinderGeometry(0.6, 0.9, 5, 8);
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xbfc7d9, metalness: 0.3, roughness: 0.6 });
-  const body = new THREE.Mesh(bodyGeo, bodyMat);
-  body.rotation.x = Math.PI / 2;
-  group.add(body);
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0xc9d1e0, metalness: 0.35, roughness: 0.55 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x171a25, metalness: 0.2, roughness: 0.85 });
+  const redMat = new THREE.MeshStandardMaterial({ color: 0xb02a2a, roughness: 0.7 });
+  const engineMat = new THREE.MeshStandardMaterial({ color: 0x9aa3b8, metalness: 0.35, roughness: 0.5 });
+  const gunMat = new THREE.MeshStandardMaterial({ color: 0x2b2f3a, metalness: 0.45, roughness: 0.45 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x0c0f18,
+    roughness: 0.1,
+    metalness: 0.0,
+    transparent: true,
+    opacity: 0.6
+  });
+  const nozzleMat = new THREE.MeshStandardMaterial({
+    color: 0x1c7cff,
+    emissive: 0x2c9cff,
+    emissiveIntensity: 3.0,
+    roughness: 0.2
+  });
 
-  const wingGeo = new THREE.BoxGeometry(4.5, 0.15, 1.2);
-  const wingMat = new THREE.MeshStandardMaterial({ color: 0x9aa3b8 });
-  const wingTop = new THREE.Mesh(wingGeo, wingMat);
-  wingTop.position.y = 0.6;
-  const wingBottom = new THREE.Mesh(wingGeo, wingMat);
-  wingBottom.position.y = -0.6;
-  group.add(wingTop, wingBottom);
+  // Fuselage (reads as X-wing from silhouette, v0).
+  const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.1, 10.8, 12), hullMat);
+  fuselage.rotation.x = Math.PI / 2;
+  fuselage.castShadow = true;
+  group.add(fuselage);
 
-  const noseGeo = new THREE.ConeGeometry(0.6, 2.5, 8);
-  const nose = new THREE.Mesh(noseGeo, bodyMat);
-  nose.position.z = -3.6;
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.9, 3.8, 12), hullMat);
+  nose.position.z = -7.2;
   nose.rotation.x = Math.PI;
+  nose.castShadow = true;
   group.add(nose);
+
+  const intake = new THREE.Mesh(new THREE.BoxGeometry(1.35, 1.05, 2.4), darkMat);
+  intake.position.set(0, -0.1, -1.0);
+  intake.castShadow = true;
+  group.add(intake);
+
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.95, 12, 12), glassMat);
+  canopy.position.set(0, 0.55, -2.0);
+  canopy.scale.set(1.1, 0.75, 1.35);
+  canopy.castShadow = true;
+  group.add(canopy);
+
+  // Astromech dome (quick read).
+  const droid = new THREE.Group();
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 10), hullMat);
+  dome.position.y = 0.2;
+  dome.castShadow = true;
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.22, 10), hullMat);
+  cap.castShadow = true;
+  droid.add(cap, dome);
+  droid.position.set(0.75, 0.45, 0.9);
+  group.add(droid);
+
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.08, 0.8), redMat);
+  stripe.position.set(-1.95, 0.2, -1.0);
+  stripe.castShadow = true;
+  group.add(stripe);
+
+  // S-foils (4 wings), rotated around Z to make the X shape.
+  const wingAngle = 0.52; // ~30deg
+  const wingGeo = new THREE.BoxGeometry(7.8, 0.14, 1.9);
+  const engineGeo = new THREE.CylinderGeometry(0.44, 0.44, 3.4, 10);
+  const nozzleGeo = new THREE.CylinderGeometry(0.26, 0.32, 0.42, 10);
+  const cannonGeo = new THREE.CylinderGeometry(0.09, 0.09, 3.6, 8);
+
+  const makeWing = (side: -1 | 1, up: -1 | 1) => {
+    const w = new THREE.Group();
+    w.rotation.z = up * wingAngle;
+
+    const wing = new THREE.Mesh(wingGeo, darkMat);
+    wing.position.set(side * 4.0, 0, -1.2);
+    wing.castShadow = true;
+    w.add(wing);
+
+    const engine = new THREE.Mesh(engineGeo, engineMat);
+    engine.rotation.x = Math.PI / 2;
+    engine.position.set(side * 6.55, 0, 0.2);
+    engine.castShadow = true;
+    w.add(engine);
+
+    const nozzle = new THREE.Mesh(nozzleGeo, nozzleMat);
+    nozzle.rotation.x = Math.PI / 2;
+    nozzle.position.set(side * 6.55, 0, 1.95);
+    w.add(nozzle);
+
+    const glow = makeBoltGlow(0x66aaff);
+    glow.position.set(side * 6.55, 0, 2.25);
+    glow.scale.setScalar(4.4);
+    w.add(glow);
+
+    const cannon = new THREE.Mesh(cannonGeo, gunMat);
+    cannon.rotation.x = Math.PI / 2;
+    cannon.position.set(side * 7.15, 0, -5.25);
+    cannon.castShadow = true;
+    w.add(cannon);
+
+    return w;
+  };
+
+  group.add(makeWing(1, 1), makeWing(-1, 1), makeWing(1, -1), makeWing(-1, -1));
 
   return group;
 }
@@ -701,17 +1003,30 @@ function buildEnemyMesh(id: string) {
   if (id === "tie_ln") {
     const group = new THREE.Group();
     const cockpit = new THREE.Mesh(
-      new THREE.SphereGeometry(2.4, 10, 10),
+      new THREE.SphereGeometry(2.4, 12, 12),
       new THREE.MeshStandardMaterial({ color: 0x2b2f3a, metalness: 0.25, roughness: 0.6 })
     );
+    cockpit.castShadow = true;
     group.add(cockpit);
     const panelGeo = new THREE.BoxGeometry(0.6, 6.5, 6.5);
     const panelMat = new THREE.MeshStandardMaterial({ color: 0x1a1c23, metalness: 0.2, roughness: 0.7 });
     const left = new THREE.Mesh(panelGeo, panelMat);
     left.position.x = -4.2;
+    left.castShadow = true;
     const right = new THREE.Mesh(panelGeo, panelMat);
     right.position.x = 4.2;
-    group.add(left, right);
+    right.castShadow = true;
+
+    const strutGeo = new THREE.BoxGeometry(2.8, 0.35, 0.35);
+    const strutMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4c, metalness: 0.25, roughness: 0.6 });
+    const strut = new THREE.Mesh(strutGeo, strutMat);
+    strut.castShadow = true;
+
+    const glow = makeBoltGlow(0x66ff88);
+    glow.position.z = 3.0;
+    glow.scale.setScalar(5.2);
+
+    group.add(left, right, strut, glow);
     return group;
   }
 
@@ -927,20 +1242,31 @@ function syncProjectiles() {
   for (const eid of ps) {
     let mesh = projectileMeshes.get(eid);
     if (!mesh) {
-      mesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.3, 0.3, 6, 6),
-        new THREE.MeshBasicMaterial({ color: 0xff4444 })
-      );
+      const owner = Projectile.owner[eid] ?? -1;
+      const ownerTeam = owner >= 0 && hasComponent(game.world, Team, owner) ? (Team.id[owner] ?? -1) : -1;
+      const friendly = ownerTeam === 0;
+      mesh = new THREE.Mesh(boltGeo, friendly ? boltMatFriendly : boltMatEnemy);
       mesh.rotation.x = Math.PI / 2;
+      mesh.renderOrder = 8;
+      mesh.add(makeBoltGlow(friendly ? 0xff6666 : 0x77ff88));
       scene.add(mesh);
       projectileMeshes.set(eid, mesh);
+
+      if (owner === shipEid) {
+        spawnExplosion(
+          tmpExplosionPos.set(Transform.x[eid] ?? 0, Transform.y[eid] ?? 0, Transform.z[eid] ?? 0),
+          0xff6666,
+          0.12,
+          2.2
+        );
+      }
     }
     mesh.position.set(Transform.x[eid] ?? 0, Transform.y[eid] ?? 0, Transform.z[eid] ?? 0);
 
-    const dv = new THREE.Vector3(Velocity.vx[eid] ?? 0, Velocity.vy[eid] ?? 0, Velocity.vz[eid] ?? 0);
-    if (dv.lengthSq() > 1e-4) {
-      dv.normalize();
-      mesh.quaternion.setFromUnitVectors(boltForward, dv);
+    tmpProjVel.set(Velocity.vx[eid] ?? 0, Velocity.vy[eid] ?? 0, Velocity.vz[eid] ?? 0);
+    if (tmpProjVel.lengthSq() > 1e-4) {
+      tmpProjVel.normalize();
+      mesh.quaternion.setFromUnitVectors(boltForward, tmpProjVel);
     }
   }
 
@@ -969,7 +1295,7 @@ function resetExplosions() {
   explosions.length = 0;
 }
 
-function spawnExplosion(pos: THREE.Vector3, color = 0xffaa55) {
+function spawnExplosion(pos: THREE.Vector3, color = 0xffaa55, duration = 0.7, maxScale = 8) {
   const fx =
     explosionPool.pop() ??
     (() => {
@@ -982,11 +1308,12 @@ function spawnExplosion(pos: THREE.Vector3, color = 0xffaa55) {
       });
       const mesh = new THREE.Mesh(explosionGeo, mat);
       mesh.renderOrder = 10;
-      return { mesh, age: 0, duration: 0.7 } satisfies ExplosionFx;
+      return { mesh, age: 0, duration: 0.7, maxScale: 8 } satisfies ExplosionFx;
     })();
 
   fx.age = 0;
-  fx.duration = 0.7;
+  fx.duration = duration;
+  fx.maxScale = maxScale;
   fx.mesh.position.copy(pos);
   fx.mesh.scale.setScalar(1);
   const mat = fx.mesh.material as THREE.MeshBasicMaterial;
@@ -1002,7 +1329,7 @@ function updateExplosions(dt: number) {
     const fx = explosions[i]!;
     fx.age += dt;
     const t = fx.age / fx.duration;
-    const scale = 1 + t * 8;
+    const scale = 1 + t * fx.maxScale;
     fx.mesh.scale.setScalar(scale);
     const mat = fx.mesh.material as THREE.MeshBasicMaterial;
     mat.opacity = Math.max(0, 1 - t);
@@ -1087,6 +1414,7 @@ function enterFlightMode(system: SystemDef, nextScenario: Scenario = "sandbox") 
   respawnTimer = 0;
   mission = null;
   yavin = null;
+  camInit = false;
 
   controls.enabled = false;
   resetExplosions();
@@ -1096,6 +1424,14 @@ function enterFlightMode(system: SystemDef, nextScenario: Scenario = "sandbox") 
   scene.add(new THREE.AmbientLight(0xffffff, 0.9));
   const sun = new THREE.DirectionalLight(0xffffff, 1.1);
   sun.position.set(200, 400, 150);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.near = 10;
+  sun.shadow.camera.far = 9000;
+  sun.shadow.camera.left = -2400;
+  sun.shadow.camera.right = 2400;
+  sun.shadow.camera.top = 2400;
+  sun.shadow.camera.bottom = -2400;
   scene.add(sun);
   scene.add(new THREE.PointLight(0x88aaff, 0.6, 0, 2));
 
@@ -1147,7 +1483,12 @@ function respawnPlayer() {
   applyUpgradesToPlayer(true);
   shipMesh = buildShipMesh();
   shipMesh.scale.setScalar(2.5);
+  shipMesh.traverse((c) => {
+    c.castShadow = true;
+    c.receiveShadow = false;
+  });
   scene.add(shipMesh);
+  camInit = false;
 
   lockValue = 0;
   lockTargetEid = -1;
@@ -1407,6 +1748,7 @@ function enterMapMode() {
   yavin = null;
   clearAllies();
   clearPlanetaryScene();
+  camInit = false;
 
   // Remove flight-only ECS entities and meshes.
   clearProjectiles();
@@ -1431,7 +1773,10 @@ function enterMapMode() {
   }
 
   scene.clear();
-  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+  sun.position.set(350, 620, 280);
+  scene.add(sun);
   camera.position.set(0, 200, 600);
   rebuildGalaxy();
 }
@@ -1471,7 +1816,7 @@ function updateFlightHud(dtSeconds = 1 / 60) {
       ? Health.hp[baseEid] ?? 0
       : 0;
 
-  if (!shipEid) {
+  if (shipEid === null) {
     els.speed.textContent = "0";
     els.throttle.textContent = "0%";
     els.shield.textContent = "0/0";
@@ -1719,15 +2064,15 @@ window.addEventListener("pointermove", (ev) => {
 });
 
 window.addEventListener("click", (ev) => {
-  if (mode !== "map" || upgradesOpen || !systemsPoints) return;
+  if (mode !== "map" || upgradesOpen || !systemsPlanets) return;
   mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
   mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObject(systemsPoints);
+  const hits = raycaster.intersectObject(systemsPlanets);
   if (hits.length === 0) return;
   const hit = hits[0];
-  const idx = hit.index ?? -1;
-  const systems = systemsPoints.userData.systems as SystemDef[];
+  const idx = hit.instanceId ?? -1;
+  const systems = systemsPlanets.userData.systems as SystemDef[];
   const sys = systems[idx];
   if (!sys) return;
 
@@ -1740,6 +2085,9 @@ window.addEventListener("click", (ev) => {
       sys.galaxyPos[1] * GALAXY_SCALE,
       sys.galaxyPos[2] * GALAXY_SCALE
     );
+    const radii = systemsPlanets.userData.radii as number[] | undefined;
+    const r = radii?.[idx] ?? 14;
+    selectedMarker.scale.setScalar(r * 1.25);
   }
   hud.innerText =
     `xwingz – galaxy map\n` +
@@ -1759,6 +2107,86 @@ window.addEventListener("click", (ev) => {
 // ---- Main tick ----
 const game = createGame({ globalSeed });
 enterMapMode();
+// Debug hook for E2E tests.
+const e2eEnabled =
+  typeof window !== "undefined" &&
+  (() => {
+    try {
+      return new URLSearchParams(window.location.search).has("e2e");
+    } catch {
+      return false;
+    }
+  })();
+try {
+  (window as any).__xwingz = {
+    get mode() {
+      return mode;
+    },
+    get scenario() {
+      return scenario;
+    },
+    get selectedSystemId() {
+      return selectedSystem?.id ?? null;
+    },
+    get yavinPhase() {
+      return yavin?.phase ?? null;
+    },
+    get targetCount() {
+      return targetEids.length;
+    },
+    get allyCount() {
+      return allyEids.length;
+    },
+    get projectileCount() {
+      return projectileMeshes.size;
+    },
+    get credits() {
+      return credits;
+    }
+  };
+  if (e2eEnabled) {
+    (window as any).__xwingzTest = {
+      killAllEnemies() {
+        for (const eid of targetEids) {
+          if (hasComponent(game.world, Transform, eid)) removeEntity(game.world, eid);
+        }
+      },
+      failBase() {
+        if (baseEid !== null && hasComponent(game.world, Health, baseEid)) {
+          Health.hp[baseEid] = 0;
+        }
+      },
+      godMode(on = true) {
+        if (shipEid === null) return;
+        if (!hasComponent(game.world, Health, shipEid) || !hasComponent(game.world, Shield, shipEid)) return;
+        if (on) {
+          Health.hp[shipEid] = Math.max(Health.hp[shipEid] ?? 0, 9999);
+          Health.maxHp[shipEid] = Math.max(Health.maxHp[shipEid] ?? 0, 9999);
+          Shield.sp[shipEid] = Math.max(Shield.sp[shipEid] ?? 0, 9999);
+          Shield.maxSp[shipEid] = Math.max(Shield.maxSp[shipEid] ?? 0, 9999);
+        }
+      }
+    };
+  }
+} catch {
+  // ignore
+}
+const simInput: SpaceInputState = {
+  pitch: 0,
+  yaw: 0,
+  roll: 0,
+  throttleDelta: 0,
+  boost: false,
+  brake: false,
+  firePrimary: false,
+  cycleTarget: false,
+  hyperspace: false,
+  toggleMap: false
+};
+let smPitch = 0;
+let smYaw = 0;
+let smRoll = 0;
+let smThrottleDelta = 0;
 game.setTick((dt) => {
   if (mode === "map") {
     controls.update();
@@ -1768,7 +2196,25 @@ game.setTick((dt) => {
 
   // Flight mode
   input.update();
-  if (input.state.toggleMap) {
+  {
+    const a = clamp(dt * 10, 0, 1);
+    smPitch += (input.state.pitch - smPitch) * a;
+    smYaw += (input.state.yaw - smYaw) * a;
+    smRoll += (input.state.roll - smRoll) * a;
+    smThrottleDelta += (input.state.throttleDelta - smThrottleDelta) * a;
+
+    simInput.pitch = smPitch;
+    simInput.yaw = smYaw;
+    simInput.roll = smRoll;
+    simInput.throttleDelta = smThrottleDelta;
+    simInput.boost = input.state.boost;
+    simInput.brake = input.state.brake;
+    simInput.firePrimary = input.state.firePrimary;
+    simInput.cycleTarget = input.state.cycleTarget;
+    simInput.hyperspace = input.state.hyperspace;
+    simInput.toggleMap = input.state.toggleMap;
+  }
+  if (simInput.toggleMap) {
     enterMapMode();
     return;
   }
@@ -1778,13 +2224,13 @@ game.setTick((dt) => {
     currentSystem &&
     yavin &&
     (yavin.phase === "success" || yavin.phase === "fail") &&
-    input.state.hyperspace
+    simInput.hyperspace
   ) {
     enterFlightMode(currentSystem, "yavin_defense");
     return;
   }
 
-  if (scenario === "yavin_defense" && yavin && yavin.phase === "combat" && input.state.hyperspace) {
+  if (scenario === "yavin_defense" && yavin && yavin.phase === "combat" && simInput.hyperspace) {
     yavin.message = "HYPERSPACE DISABLED - COMPLETE OBJECTIVE";
     yavin.messageTimer = 2;
   }
@@ -1813,13 +2259,24 @@ game.setTick((dt) => {
     return;
   }
 
-  targetingSystem(game.world, input.state);
+  targetingSystem(game.world, simInput);
   dogfightAISystem(game.world, dt);
-  spaceflightSystem(game.world, input.state, dt);
-  weaponSystem(game.world, input.state, dt);
+  spaceflightSystem(game.world, simInput, dt);
+  weaponSystem(game.world, simInput, dt);
   aiWeaponSystem(game.world, dt);
   projectileSystem(game.world, dt);
   shieldRegenSystem(game.world, dt);
+
+  const impacts = consumeImpactEvents();
+  for (const hit of impacts) {
+    const color = hit.team === 0 ? 0xff6666 : 0x77ff88;
+    spawnExplosion(
+      tmpExplosionPos.set(hit.x, hit.y, hit.z),
+      color,
+      hit.killed ? 0.55 : 0.18,
+      hit.killed ? 9 : 2.4
+    );
+  }
 
   if (scenario === "yavin_defense" && yavin && yavin.phase === "combat") {
     const baseAlive =
@@ -1879,10 +2336,26 @@ game.setTick((dt) => {
 
     const q = shipMesh.quaternion;
     const pos = shipMesh.position;
-    const camOffset = tmpCamOffset.set(0, 5, 18).applyQuaternion(q);
-    const lookOffset = tmpLookOffset.set(0, 0, -40).applyQuaternion(q);
-    camera.position.copy(pos).add(camOffset);
-    camera.lookAt(tmpLookAt.copy(pos).add(lookOffset));
+    const boostFov = (Ship.throttle[player] ?? 0) > 0.9 && simInput.boost ? 6 : 0;
+    camera.fov = 70 + boostFov;
+    camera.updateProjectionMatrix();
+
+    const camOffset = tmpCamOffset.set(0, 6, 22).applyQuaternion(q);
+    const lookOffset = tmpLookOffset.set(0, 1.0, -48).applyQuaternion(q);
+    const desiredPos = tmpLookAt.copy(pos).add(camOffset);
+    const desiredLook = tmpExplosionPos.copy(pos).add(lookOffset);
+
+    const k = 1 - Math.exp(-dt * 8.5);
+    if (!camInit) {
+      camSmoothPos.copy(desiredPos);
+      camSmoothLook.copy(desiredLook);
+      camInit = true;
+    } else {
+      camSmoothPos.lerp(desiredPos, k);
+      camSmoothLook.lerp(desiredLook, k);
+    }
+    camera.position.copy(camSmoothPos);
+    camera.lookAt(camSmoothLook);
   }
 
   syncTargets();
@@ -1894,7 +2367,7 @@ game.setTick((dt) => {
   }
   syncProjectiles();
 
-  if (scenario !== "yavin_defense" && input.state.hyperspace) hyperspaceJump();
+  if (scenario !== "yavin_defense" && simInput.hyperspace) hyperspaceJump();
 
   if (mission && mission.messageTimer > 0) {
     mission.messageTimer = Math.max(0, mission.messageTimer - dt);

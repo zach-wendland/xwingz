@@ -13,20 +13,20 @@ export type SpaceInputState = {
 
 export function createSpaceInput(target: Window = window) {
   const keys = new Set<string>();
-  let firePrimary = false;
   let cycleTarget = false;
   let hyperspace = false;
   let toggleMap = false;
 
   function onKeyDown(e: KeyboardEvent) {
-    keys.add(e.key);
-    if (e.key === " " || e.code === "Space") firePrimary = true;
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys.add(key);
     if (e.key.toLowerCase() === "t") cycleTarget = true;
     if (e.key.toLowerCase() === "h") hyperspace = true;
     if (e.key.toLowerCase() === "m") toggleMap = true;
   }
   function onKeyUp(e: KeyboardEvent) {
-    keys.delete(e.key);
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys.delete(key);
   }
   target.addEventListener("keydown", onKeyDown);
   target.addEventListener("keyup", onKeyUp);
@@ -57,12 +57,11 @@ export function createSpaceInput(target: Window = window) {
     state.throttleDelta = axis(["f"], ["r"]); // R up, F down
     state.boost = keys.has("Shift") || keys.has("ShiftLeft") || keys.has("ShiftRight");
     state.brake = keys.has("x");
-    state.firePrimary = firePrimary;
+    state.firePrimary = keys.has(" ");
     state.cycleTarget = cycleTarget;
     state.hyperspace = hyperspace;
     state.toggleMap = toggleMap;
 
-    firePrimary = false;
     cycleTarget = false;
     hyperspace = false;
     toggleMap = false;

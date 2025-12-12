@@ -13,6 +13,7 @@ import {
 import {
   AIControlled,
   AngularVelocity,
+  computeInterceptTime,
   createSpaceInput,
   dogfightAISystem,
   getPlayerShip,
@@ -159,6 +160,37 @@ let targetEids: number[] = [];
 let lockValue = 0;
 let lockTargetEid = -1;
 const boltForward = new THREE.Vector3(0, 0, 1);
+
+type FlightHudElements = {
+  speed: HTMLDivElement;
+  throttle: HTMLDivElement;
+  system: HTMLDivElement;
+  faction: HTMLDivElement;
+  target: HTMLDivElement;
+  lock: HTMLDivElement;
+  bracket: HTMLDivElement;
+  lead: HTMLDivElement;
+};
+let flightHud: FlightHudElements | null = null;
+
+type ScreenPoint = { x: number; y: number; onScreen: boolean; behind: boolean };
+const tmpNdc = new THREE.Vector3();
+const tmpHudTargetPos = new THREE.Vector3();
+const tmpHudLeadPos = new THREE.Vector3();
+const tmpHudQ = new THREE.Quaternion();
+const tmpHudForward = new THREE.Vector3();
+const tmpHudDir = new THREE.Vector3();
+const tmpTargetScreen: ScreenPoint = { x: 0, y: 0, onScreen: false, behind: false };
+const tmpLeadScreen: ScreenPoint = { x: 0, y: 0, onScreen: false, behind: false };
+const tmpCamOffset = new THREE.Vector3();
+const tmpLookOffset = new THREE.Vector3();
+const tmpLookAt = new THREE.Vector3();
+const tmpExplosionPos = new THREE.Vector3();
+
+type ExplosionFx = { mesh: THREE.Mesh; age: number; duration: number };
+const explosions: ExplosionFx[] = [];
+const explosionPool: ExplosionFx[] = [];
+const explosionGeo = new THREE.SphereGeometry(1, 14, 14);
 
 function buildLocalStarfield(seed: bigint) {
   if (starfield) {
@@ -332,6 +364,7 @@ function syncTargets() {
 
   for (const [eid, mesh] of targetMeshes) {
     if (aliveSet.has(eid)) continue;
+    spawnExplosion(tmpExplosionPos.copy(mesh.position));
     scene.remove(mesh);
     disposeObject(mesh);
     targetMeshes.delete(eid);
@@ -391,6 +424,59 @@ function disposeObject(obj: THREE.Object3D) {
   });
 }
 
+function resetExplosions() {
+  for (const fx of explosions) {
+    scene.remove(fx.mesh);
+    explosionPool.push(fx);
+  }
+  explosions.length = 0;
+}
+
+function spawnExplosion(pos: THREE.Vector3, color = 0xffaa55) {
+  const fx =
+    explosionPool.pop() ??
+    (() => {
+      const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(explosionGeo, mat);
+      mesh.renderOrder = 10;
+      return { mesh, age: 0, duration: 0.7 } satisfies ExplosionFx;
+    })();
+
+  fx.age = 0;
+  fx.duration = 0.7;
+  fx.mesh.position.copy(pos);
+  fx.mesh.scale.setScalar(1);
+  const mat = fx.mesh.material as THREE.MeshBasicMaterial;
+  mat.color.setHex(color);
+  mat.opacity = 1;
+
+  scene.add(fx.mesh);
+  explosions.push(fx);
+}
+
+function updateExplosions(dt: number) {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const fx = explosions[i]!;
+    fx.age += dt;
+    const t = fx.age / fx.duration;
+    const scale = 1 + t * 8;
+    fx.mesh.scale.setScalar(scale);
+    const mat = fx.mesh.material as THREE.MeshBasicMaterial;
+    mat.opacity = Math.max(0, 1 - t);
+    if (t >= 1) {
+      scene.remove(fx.mesh);
+      explosions.splice(i, 1);
+      explosionPool.push(fx);
+    }
+  }
+}
+
 function setupFlightHud() {
   hud.className = "hud-xwing";
   hud.innerHTML = `
@@ -424,6 +510,22 @@ function setupFlightHud() {
       <div class="hud-label">BRAKE: X</div>
     </div>
   `;
+
+  const q = <T extends HTMLElement>(sel: string) => {
+    const el = hud.querySelector<T>(sel);
+    if (!el) throw new Error(`HUD element not found: ${sel}`);
+    return el;
+  };
+  flightHud = {
+    speed: q<HTMLDivElement>("#hud-speed"),
+    throttle: q<HTMLDivElement>("#hud-throttle"),
+    system: q<HTMLDivElement>("#hud-system"),
+    faction: q<HTMLDivElement>("#hud-faction"),
+    target: q<HTMLDivElement>("#hud-target"),
+    lock: q<HTMLDivElement>("#hud-lock"),
+    bracket: q<HTMLDivElement>("#hud-bracket"),
+    lead: q<HTMLDivElement>("#hud-lead")
+  };
 }
 
 function enterFlightMode(system: SystemDef) {
@@ -432,6 +534,7 @@ function enterFlightMode(system: SystemDef) {
   jumpIndex = 0;
 
   controls.enabled = false;
+  resetExplosions();
   scene.clear();
   scene.add(new THREE.AmbientLight(0xffffff, 0.9));
   const sun = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -472,6 +575,8 @@ function enterFlightMode(system: SystemDef) {
 function enterMapMode() {
   mode = "map";
   controls.enabled = true;
+  flightHud = null;
+  resetExplosions();
 
   // Remove flight-only ECS entities and meshes.
   for (const eid of projectileMeshes.keys()) {
@@ -494,35 +599,44 @@ function enterMapMode() {
   rebuildGalaxy();
 }
 
-function projectToScreen(pos: THREE.Vector3) {
-  const v = pos.clone().project(camera);
+function projectToScreen(pos: THREE.Vector3, out: ScreenPoint) {
+  const v = tmpNdc.copy(pos).project(camera);
   const w = renderer.domElement.clientWidth || window.innerWidth;
   const h = renderer.domElement.clientHeight || window.innerHeight;
-  const x = (v.x * 0.5 + 0.5) * w;
-  const y = (-v.y * 0.5 + 0.5) * h;
-  const onScreen = v.z > -1 && v.z < 1 && v.x > -1 && v.x < 1 && v.y > -1 && v.y < 1;
-  return { x, y, onScreen };
+
+  let nx = v.x;
+  let ny = v.y;
+  const behind = v.z > 1;
+  if (behind) {
+    nx = -nx;
+    ny = -ny;
+  }
+
+  const onScreen = !behind && v.z > -1 && v.z < 1 && nx > -1 && nx < 1 && ny > -1 && ny < 1;
+
+  const margin = 0.92;
+  const cx = clamp(nx, -margin, margin);
+  const cy = clamp(ny, -margin, margin);
+  out.x = (cx * 0.5 + 0.5) * w;
+  out.y = (-cy * 0.5 + 0.5) * h;
+  out.onScreen = onScreen;
+  out.behind = behind;
+  return out;
 }
 
 function updateFlightHud(dtSeconds = 1 / 60) {
-  const speedEl = document.querySelector<HTMLDivElement>("#hud-speed");
-  const throttleEl = document.querySelector<HTMLDivElement>("#hud-throttle");
-  const systemEl = document.querySelector<HTMLDivElement>("#hud-system");
-  const factionEl = document.querySelector<HTMLDivElement>("#hud-faction");
-  const targetEl = document.querySelector<HTMLDivElement>("#hud-target");
-  const lockEl = document.querySelector<HTMLDivElement>("#hud-lock");
-  const bracketEl = document.querySelector<HTMLDivElement>("#hud-bracket");
-  const leadEl = document.querySelector<HTMLDivElement>("#hud-lead");
-
-  if (!shipEid) return;
+  const els = flightHud;
+  if (!shipEid || !els) return;
   const v =
     Math.hypot(Velocity.vx[shipEid], Velocity.vy[shipEid], Velocity.vz[shipEid]) || 0;
   const t = Ship.throttle[shipEid] || 0;
 
-  if (speedEl) speedEl.textContent = v.toFixed(0);
-  if (throttleEl) throttleEl.textContent = `${Math.round(t * 100)}%`;
-  if (systemEl && currentSystem) systemEl.textContent = currentSystem.id;
-  if (factionEl && currentSystem) factionEl.textContent = currentSystem.controllingFaction;
+  els.speed.textContent = v.toFixed(0);
+  els.throttle.textContent = `${Math.round(t * 100)}%`;
+  if (currentSystem) {
+    els.system.textContent = currentSystem.id;
+    els.faction.textContent = currentSystem.controllingFaction;
+  }
 
   const teid = Targeting.targetEid[shipEid] ?? -1;
   if (teid !== lockTargetEid) {
@@ -545,60 +659,67 @@ function updateFlightHud(dtSeconds = 1 / 60) {
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
     const hp = Health.hp[teid] ?? 0;
-    if (targetEl) targetEl.textContent = `TGT ${teid}  ${dist.toFixed(0)}m  HP ${hp.toFixed(0)}`;
+    els.target.textContent = `TGT ${teid}  ${dist.toFixed(0)}m  HP ${hp.toFixed(0)}`;
 
     // Bracket on target.
-    if (bracketEl) {
-      const { x, y, onScreen } = projectToScreen(new THREE.Vector3(tx, ty, tz));
-      bracketEl.classList.toggle("hidden", !onScreen);
-      if (onScreen) {
-        bracketEl.style.left = `${x}px`;
-        bracketEl.style.top = `${y}px`;
-      }
-    }
+    const screen = projectToScreen(tmpHudTargetPos.set(tx, ty, tz), tmpTargetScreen);
+    els.bracket.classList.remove("hidden");
+    els.bracket.classList.toggle("offscreen", !screen.onScreen);
+    els.bracket.classList.toggle("behind", screen.behind);
+    els.bracket.style.left = `${screen.x}px`;
+    els.bracket.style.top = `${screen.y}px`;
 
     // Lead pip.
-    if (leadEl) {
-      const projSpeed = LaserWeapon.projectileSpeed[shipEid] ?? 900;
-      const tvx = Velocity.vx[teid] ?? 0;
-      const tvy = Velocity.vy[teid] ?? 0;
-      const tvz = Velocity.vz[teid] ?? 0;
-      const leadTime = dist / projSpeed;
-      const leadPos = new THREE.Vector3(tx + tvx * leadTime, ty + tvy * leadTime, tz + tvz * leadTime);
-      const { x, y, onScreen } = projectToScreen(leadPos);
-      leadEl.classList.toggle("hidden", !onScreen);
-      if (onScreen) {
-        leadEl.style.left = `${x}px`;
-        leadEl.style.top = `${y}px`;
-      }
+    const projSpeed = LaserWeapon.projectileSpeed[shipEid] ?? 900;
+    const tvx = Velocity.vx[teid] ?? 0;
+    const tvy = Velocity.vy[teid] ?? 0;
+    const tvz = Velocity.vz[teid] ?? 0;
+    const svx = Velocity.vx[shipEid] ?? 0;
+    const svy = Velocity.vy[shipEid] ?? 0;
+    const svz = Velocity.vz[shipEid] ?? 0;
+    const rvx = tvx - svx;
+    const rvy = tvy - svy;
+    const rvz = tvz - svz;
+    const leadTime = computeInterceptTime(dx, dy, dz, rvx, rvy, rvz, projSpeed) ?? dist / projSpeed;
+    const leadPos = tmpHudLeadPos.set(tx + tvx * leadTime, ty + tvy * leadTime, tz + tvz * leadTime);
+    const leadScreen = projectToScreen(leadPos, tmpLeadScreen);
+    els.lead.classList.toggle("hidden", !leadScreen.onScreen);
+    if (leadScreen.onScreen) {
+      els.lead.style.left = `${leadScreen.x}px`;
+      els.lead.style.top = `${leadScreen.y}px`;
     }
 
     // Lock meter: fill when target is in front cone and range.
-    const q = new THREE.Quaternion(
+    const q = tmpHudQ.set(
       Transform.qx[shipEid] ?? 0,
       Transform.qy[shipEid] ?? 0,
       Transform.qz[shipEid] ?? 0,
       Transform.qw[shipEid] ?? 1
     );
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(q).normalize();
-    const dir = new THREE.Vector3(dx, dy, dz).normalize();
+    const forward = tmpHudForward.set(0, 0, -1).applyQuaternion(q).normalize();
+    const dir = tmpHudDir.set(dx, dy, dz).normalize();
     const dot = forward.dot(dir);
-    const inCone = dot > 0.95 && dist < 900;
+    const radius = HitRadius.r[teid] ?? 8;
+    const sizeAngle = Math.atan2(radius, dist);
+    const baseCone = 0.07; // ~4 degrees
+    const cone = baseCone + sizeAngle;
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+    const inCone = screen.onScreen && angle < cone && dist < 900;
 
-    lockValue += (inCone ? 1 : -1) * 0.6 * dtSeconds;
+    const lockGain = 0.9;
+    const lockDecay = 1.3;
+    lockValue += (inCone ? lockGain : -lockDecay) * dtSeconds;
     lockValue = Math.min(1, Math.max(0, lockValue));
 
-    if (lockEl) {
-      const pct = Math.round(lockValue * 100);
-      lockEl.textContent = lockValue >= 1 ? "LOCK" : `LOCK ${pct}%`;
-    }
+    const pct = Math.round(lockValue * 100);
+    els.lock.textContent = lockValue >= 1 ? "LOCK" : `LOCK ${pct}%`;
   } else {
-    if (targetEl) targetEl.textContent = "NO TARGET";
-    if (bracketEl) bracketEl.classList.add("hidden");
-    if (leadEl) leadEl.classList.add("hidden");
+    els.target.textContent = "NO TARGET";
+    els.bracket.classList.add("hidden");
+    els.lead.classList.add("hidden");
     lockValue = 0;
     lockTargetEid = -1;
-    if (lockEl) lockEl.textContent = "LOCK 0%";
+    els.lock.textContent = "LOCK 0%";
   }
 }
 
@@ -748,10 +869,10 @@ game.setTick((dt) => {
 
     const q = shipMesh.quaternion;
     const pos = shipMesh.position;
-    const camOffset = new THREE.Vector3(0, 5, 18).applyQuaternion(q);
-    const lookOffset = new THREE.Vector3(0, 0, -40).applyQuaternion(q);
+    const camOffset = tmpCamOffset.set(0, 5, 18).applyQuaternion(q);
+    const lookOffset = tmpLookOffset.set(0, 0, -40).applyQuaternion(q);
     camera.position.copy(pos).add(camOffset);
-    camera.lookAt(pos.clone().add(lookOffset));
+    camera.lookAt(tmpLookAt.copy(pos).add(lookOffset));
   }
 
   syncTargets();
@@ -764,6 +885,11 @@ game.setTick((dt) => {
   if (input.state.toggleMap) enterMapMode();
 
   updateFlightHud(dt);
+  updateExplosions(dt);
   renderer.render(scene, camera);
 });
 game.start();
+
+function clamp(v: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, v));
+}

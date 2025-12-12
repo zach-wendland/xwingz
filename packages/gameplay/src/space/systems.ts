@@ -82,6 +82,7 @@ const tmpInvQ = new Quaternion();
 const tmpDesired = new Vector3();
 const tmpLocal = new Vector3();
 const tmpTargetVel = new Vector3();
+const tmpSep = new Vector3();
 
 export function spaceflightSystem(world: IWorld, input: SpaceInputState, dt: number) {
   const ships = shipQuery(world);
@@ -378,8 +379,17 @@ export function dogfightAISystem(world: IWorld, dt: number) {
     const dz = pz - sz;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
+    const aggression = FighterBrain.aggression[eid] ?? 0.6;
+    const evadeBias = FighterBrain.evadeBias[eid] ?? 0.5;
+
+    const attackStartDist = lerp(620, 820, aggression);
+    const breakOffDist = lerp(220, 140, aggression);
+    const maxAttackTime = lerp(4.5, 7.5, aggression);
+    const breakOffDuration = lerp(1.8, 1.1, aggression);
+    const evadeDuration = lerp(0.8, 1.8, evadeBias);
+
     // transition helpers
-    const forwardConeDot = 0.92;
+    const forwardConeDot = lerp(0.95, 0.9, aggression);
 
     if (state === AIState.Acquire) {
       FighterBrain.targetEid[eid] = player;
@@ -390,33 +400,34 @@ export function dogfightAISystem(world: IWorld, dt: number) {
     const lastHit = Shield.lastHit[eid];
     if (lastHit !== undefined) {
       Shield.lastHit[eid] = lastHit + dt;
-      if (lastHit < 0.8 && state !== AIState.Evade) {
+      const evadeTriggerWindow = 0.5 + evadeBias * 0.8;
+      if (lastHit < evadeTriggerWindow && state !== AIState.Evade) {
         state = AIState.Evade;
         stateTime = 0;
       }
     }
 
     if (state === AIState.Pursue) {
-      if (dist < 700) {
+      if (dist < attackStartDist) {
         state = AIState.Attack;
         stateTime = 0;
       }
     } else if (state === AIState.Attack) {
-      if (dist < 180) {
+      if (dist < breakOffDist) {
         state = AIState.BreakOff;
         stateTime = 0;
       }
-      if (stateTime > 6) {
+      if (stateTime > maxAttackTime) {
         state = AIState.BreakOff;
         stateTime = 0;
       }
     } else if (state === AIState.BreakOff) {
-      if (stateTime > 1.4) {
+      if (stateTime > breakOffDuration) {
         state = AIState.Pursue;
         stateTime = 0;
       }
     } else if (state === AIState.Evade) {
-      if (stateTime > 1.2) {
+      if (stateTime > evadeDuration) {
         state = AIState.Pursue;
         stateTime = 0;
       }
@@ -430,16 +441,50 @@ export function dogfightAISystem(world: IWorld, dt: number) {
     if (state === AIState.BreakOff) {
       desiredWorld = tmpDesired.set(-dx, -dy * 0.3, -dz).normalize();
     } else if (state === AIState.Evade) {
-      const wobble = Math.sin((stateTime + eid * 0.13) * 6) * 0.6;
+      const wobbleAmp = 0.4 + evadeBias * 0.9;
+      const wobble = Math.sin((stateTime + eid * 0.13) * 6) * wobbleAmp;
       desiredWorld = tmpDesired.set(dx + dy * wobble, dy + dz * wobble, dz - dx * wobble).normalize();
     } else {
       // Lead intercept aim.
       const projSpeed = LaserWeapon.projectileSpeed[eid] ?? 900;
-      const leadTime = dist / projSpeed;
+      const svx = Velocity.vx[eid] ?? 0;
+      const svy = Velocity.vy[eid] ?? 0;
+      const svz = Velocity.vz[eid] ?? 0;
+      const rvx = pvx - svx;
+      const rvy = pvy - svy;
+      const rvz = pvz - svz;
+      const leadTime =
+        computeInterceptTime(dx, dy, dz, rvx, rvy, rvz, projSpeed) ??
+        dist / projSpeed;
       desiredWorld = tmpDesired
-        .set(dx, dy, dz)
-        .addScaledVector(tmpTargetVel, leadTime)
+        .set(dx + rvx * leadTime, dy + rvy * leadTime, dz + rvz * leadTime)
         .normalize();
+    }
+
+    // Separation from nearby AI to reduce clustering.
+    const sepRadius = 90;
+    const sepRadius2 = sepRadius * sepRadius;
+    let sepX = 0, sepY = 0, sepZ = 0;
+    for (const other of ais) {
+      if (other === eid) continue;
+      const ox = Transform.x[other] ?? 0;
+      const oy = Transform.y[other] ?? 0;
+      const oz = Transform.z[other] ?? 0;
+      const rx = sx - ox;
+      const ry = sy - oy;
+      const rz = sz - oz;
+      const d2 = rx * rx + ry * ry + rz * rz;
+      if (d2 < 1e-3 || d2 > sepRadius2) continue;
+      const invD = 1 / Math.sqrt(d2);
+      const strength = (sepRadius * invD - 1);
+      sepX += rx * strength;
+      sepY += ry * strength;
+      sepZ += rz * strength;
+    }
+    if (sepX * sepX + sepY * sepY + sepZ * sepZ > 1e-4) {
+      tmpSep.set(sepX, sepY, sepZ).normalize();
+      const sepWeight = 0.35 + (1 - aggression) * 0.35;
+      desiredWorld.addScaledVector(tmpSep, sepWeight).normalize();
     }
 
     tmpQ.set(
@@ -455,9 +500,11 @@ export function dogfightAISystem(world: IWorld, dt: number) {
     const pitchErr = Math.atan2(tmpLocal.y, -tmpLocal.z);
 
     const turnRate = Ship.turnRate[eid] ?? 1.2;
-    const yawCmd = clamp(yawErr * 1.5, -1, 1);
-    const pitchCmd = clamp(pitchErr * 1.5, -1, 1);
-    const rollCmd = state === AIState.Evade ? clamp(-yawCmd * 0.8, -1, 1) : 0;
+    const gain = lerp(1.1, 1.7, aggression);
+    const damp = 0.35;
+    const yawCmd = clamp(yawErr * gain - (AngularVelocity.wy[eid] ?? 0) / turnRate * damp, -1, 1);
+    const pitchCmd = clamp(pitchErr * gain - (AngularVelocity.wx[eid] ?? 0) / turnRate * damp, -1, 1);
+    const rollCmd = state === AIState.Evade ? clamp(-yawCmd * (0.6 + evadeBias * 0.5), -1, 1) : 0;
 
     AngularVelocity.wx[eid] = pitchCmd * turnRate;
     AngularVelocity.wy[eid] = yawCmd * turnRate;
@@ -508,10 +555,50 @@ export function getPlayerShip(world: IWorld): number | null {
   return players[0] ?? null;
 }
 
+export function computeInterceptTime(
+  dx: number,
+  dy: number,
+  dz: number,
+  dvx: number,
+  dvy: number,
+  dvz: number,
+  projectileSpeed: number
+): number | null {
+  if (!Number.isFinite(projectileSpeed) || projectileSpeed <= 1e-3) return null;
+
+  const a = dvx * dvx + dvy * dvy + dvz * dvz - projectileSpeed * projectileSpeed;
+  const b = 2 * (dx * dvx + dy * dvy + dz * dvz);
+  const c = dx * dx + dy * dy + dz * dz;
+
+  // Handle near-linear case when relative speed ~= projectile speed.
+  if (Math.abs(a) < 1e-6) {
+    if (Math.abs(b) < 1e-6) return null;
+    const t = -c / b;
+    return t > 0 ? t : null;
+  }
+
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+
+  const sqrtDisc = Math.sqrt(disc);
+  const invDen = 1 / (2 * a);
+  const t1 = (-b - sqrtDisc) * invDen;
+  const t2 = (-b + sqrtDisc) * invDen;
+
+  let t = Number.POSITIVE_INFINITY;
+  if (t1 > 0 && t1 < t) t = t1;
+  if (t2 > 0 && t2 < t) t = t2;
+  return t !== Number.POSITIVE_INFINITY ? t : null;
+}
+
 function clamp01(v: number) {
   return Math.min(1, Math.max(0, v));
 }
 
 function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v));
+}
+
+function lerp(a: number, b: number, t: number) {
+  return a + (b - a) * t;
 }

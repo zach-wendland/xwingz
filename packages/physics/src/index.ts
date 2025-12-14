@@ -1,2 +1,3 @@
-export const PHYSICS_VERSION = 0;
+export const PHYSICS_VERSION = 1;
 
+export * from "./rapier-world";

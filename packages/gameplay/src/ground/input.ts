@@ -12,6 +12,9 @@ export type GroundInputState = {
   firePrimary: boolean; // Mouse left or Space
   aimYaw: number;      // Accumulated mouse X (radians)
   aimPitch: number;    // Accumulated mouse Y (radians, clamped)
+  toggleMap: boolean;  // M key (one-shot, exit to map)
+  dodge: boolean;      // Alt key (one-shot, dodge roll)
+  throwGrenade: boolean; // G key (one-shot, throw grenade)
 };
 
 const PITCH_MIN = -Math.PI * 0.44; // ~-80 degrees
@@ -22,6 +25,9 @@ export function createGroundInput(target: HTMLElement | Window = window) {
   const keys = new Set<string>();
   let jumpPressed = false;
   let interactPressed = false;
+  let toggleMapPressed = false;
+  let dodgePressed = false;
+  let grenadePressed = false;
   let mouseDeltaX = 0;
   let mouseDeltaY = 0;
   let isPointerLocked = false;
@@ -35,7 +41,10 @@ export function createGroundInput(target: HTMLElement | Window = window) {
     interact: false,
     firePrimary: false,
     aimYaw: 0,
-    aimPitch: 0
+    aimPitch: 0,
+    toggleMap: false,
+    dodge: false,
+    throwGrenade: false
   };
 
   function onKeyDown(e: KeyboardEvent) {
@@ -44,6 +53,9 @@ export function createGroundInput(target: HTMLElement | Window = window) {
 
     if (key === " " || key === "Space") jumpPressed = true;
     if (key === "e") interactPressed = true;
+    if (key === "m") toggleMapPressed = true;
+    if (key === "Alt" || key === "AltLeft" || key === "AltRight") dodgePressed = true;
+    if (key === "g") grenadePressed = true;
   }
 
   function onKeyUp(e: KeyboardEvent) {
@@ -96,8 +108,14 @@ export function createGroundInput(target: HTMLElement | Window = window) {
     // One-shot inputs
     state.jump = jumpPressed;
     state.interact = interactPressed;
+    state.toggleMap = toggleMapPressed;
+    state.dodge = dodgePressed;
+    state.throwGrenade = grenadePressed;
     jumpPressed = false;
     interactPressed = false;
+    toggleMapPressed = false;
+    dodgePressed = false;
+    grenadePressed = false;
 
     // Fire
     state.firePrimary = keys.has(" ") || keys.has("Space");
@@ -132,12 +150,17 @@ export function createGroundInput(target: HTMLElement | Window = window) {
     }
   }
 
+  function isLocked(): boolean {
+    return isPointerLocked;
+  }
+
   return {
     state,
     update,
     dispose,
     requestPointerLock,
     exitPointerLock,
+    isLocked,
     get isPointerLocked() {
       return isPointerLocked;
     }

@@ -15,7 +15,10 @@ describe('Ground Input', () => {
         interact: false,
         firePrimary: false,
         aimYaw: 0,
-        aimPitch: 0
+        aimPitch: 0,
+        toggleMap: false,
+        dodge: false,
+        throwGrenade: false
       };
 
       expect(state.moveX).toBeDefined();
@@ -27,6 +30,9 @@ describe('Ground Input', () => {
       expect(state.firePrimary).toBeDefined();
       expect(state.aimYaw).toBeDefined();
       expect(state.aimPitch).toBeDefined();
+      expect(state.toggleMap).toBeDefined();
+      expect(state.dodge).toBeDefined();
+      expect(state.throwGrenade).toBeDefined();
     });
 
     it('should allow number values for movement axes', () => {
@@ -204,6 +210,19 @@ describe('Ground Input', () => {
 
       // Second frame - should not trigger again
       expect(interactPressed).toBe(false);
+    });
+
+    it('should demonstrate one-shot pattern for toggleMap (M key)', () => {
+      let toggleMapPressed = true;
+
+      // First frame - consume and return to map
+      const shouldToggleMap = toggleMapPressed;
+      toggleMapPressed = false;
+
+      expect(shouldToggleMap).toBe(true);
+
+      // Second frame - should not trigger again
+      expect(toggleMapPressed).toBe(false);
     });
   });
 

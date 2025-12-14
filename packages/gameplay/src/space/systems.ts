@@ -15,7 +15,10 @@ import {
   Targetable,
   Targeting,
   Transform,
-  Velocity
+  Velocity,
+  TorpedoLauncher,
+  TorpedoProjectile,
+  WeaponLoadout
 } from "./components";
 import type { SpaceInputState } from "./input";
 
@@ -33,7 +36,7 @@ export function consumeImpactEvents(): ImpactEvent[] {
   return impactEvents.splice(0, impactEvents.length);
 }
 
-export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: number; accel: number; turnRate: number }>) {
+export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: number; accel: number; turnRate: number; torpedoAmmo: number }>) {
   const eid = addEntity(world);
   addComponent(world, Transform, eid);
   addComponent(world, Velocity, eid);
@@ -41,6 +44,8 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
   addComponent(world, Team, eid);
   addComponent(world, Ship, eid);
   addComponent(world, LaserWeapon, eid);
+  addComponent(world, TorpedoLauncher, eid);
+  addComponent(world, WeaponLoadout, eid);
   addComponent(world, Targeting, eid);
   addComponent(world, Health, eid);
   addComponent(world, HitRadius, eid);
@@ -74,6 +79,20 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
   LaserWeapon.cooldownRemaining[eid] = 0;
   LaserWeapon.projectileSpeed[eid] = 900;
   LaserWeapon.damage[eid] = 10;
+
+  // Proton torpedo launcher - X-Wing carries 6 torpedoes
+  TorpedoLauncher.ammo[eid] = params?.torpedoAmmo ?? 6;
+  TorpedoLauncher.maxAmmo[eid] = params?.torpedoAmmo ?? 6;
+  TorpedoLauncher.lockProgress[eid] = 0;
+  TorpedoLauncher.lockTime[eid] = 2.0;  // 2 seconds to lock
+  TorpedoLauncher.lockTargetEid[eid] = -1;
+  TorpedoLauncher.cooldown[eid] = 1.5;  // 1.5 seconds between shots
+  TorpedoLauncher.cooldownRemaining[eid] = 0;
+  TorpedoLauncher.damage[eid] = 150;    // 15x laser damage
+  TorpedoLauncher.projectileSpeed[eid] = 450;  // Slower than lasers
+  TorpedoLauncher.trackingStrength[eid] = 0.85;
+
+  WeaponLoadout.activeWeapon[eid] = 0;  // Start with lasers
 
   Targeting.targetEid[eid] = -1;
 
@@ -186,10 +205,10 @@ export function spaceflightSystem(world: IWorld, input: SpaceInputState, dt: num
     const forwardSpeed =
       delta >= 0 ? forwardSpeed0 + clamp(delta, 0, accelLimit) : forwardSpeed0 + clamp(delta, -decelLimit, 0);
 
-    // Damp lateral drift aggressively to keep turn-fights tight in v1.
+    // Damp lateral drift moderately for arcade feel with some drift.
     tmpDesired.copy(tmpForward).multiplyScalar(forwardSpeed0);
     tmpLateral.copy(tmpVel).sub(tmpDesired);
-    const lateralDamp = isPlayer && input.brake ? 5.0 : 1.7;
+    const lateralDamp = isPlayer && input.brake ? 5.0 : 1.3;
     tmpLateral.multiplyScalar(Math.max(0, 1 - dt * lateralDamp));
 
     tmpVel.copy(tmpForward).multiplyScalar(forwardSpeed).add(tmpLateral);
@@ -246,7 +265,7 @@ function fireLaser(world: IWorld, shooterEid: number, targetEid: number) {
         const leadTime = computeInterceptTime(dx, dy, dz, rvx, rvy, rvz, projSpeed) ?? dist / projSpeed;
         tmpShotDir.set(dx + rvx * leadTime, dy + rvy * leadTime, dz + rvz * leadTime).normalize();
 
-        const cone = hasComponent(world, PlayerControlled, shooterEid) ? 0.84 : 0.9;
+        const cone = hasComponent(world, PlayerControlled, shooterEid) ? 0.70 : 0.9;
         if (tmpForward.dot(tmpShotDir) >= cone) {
           shotDir = tmpShotDir;
         }
@@ -418,8 +437,6 @@ export function projectileSystem(world: IWorld, dt: number) {
 }
 
 export function targetingSystem(world: IWorld, input: SpaceInputState) {
-  if (!input.cycleTarget) return;
-
   const players = targetingQuery(world);
   if (players.length === 0) return;
   const pid = players[0];
@@ -428,6 +445,10 @@ export function targetingSystem(world: IWorld, input: SpaceInputState) {
   const targets = targetableQuery(world);
   const myTeam = Team.id[pid] ?? 0;
   const hostiles = targets.filter((eid) => (Team.id[eid] ?? -1) !== myTeam);
+
+  const current = Targeting.targetEid[pid] ?? -1;
+  const currentValid = current >= 0 && hostiles.includes(current);
+
   if (hostiles.length === 0) {
     Targeting.targetEid[pid] = -1;
     return;
@@ -458,7 +479,15 @@ export function targetingSystem(world: IWorld, input: SpaceInputState) {
     .sort((a, b) => (b.dot - a.dot) || (a.d2 - b.d2))
     .map((t) => t.eid);
 
-  const current = Targeting.targetEid[pid] ?? -1;
+  // Auto-acquire nearest hostile if no valid target
+  if (!currentValid) {
+    Targeting.targetEid[pid] = sorted[0] ?? -1;
+    return;
+  }
+
+  // Manual cycle only when T pressed
+  if (!input.cycleTarget) return;
+
   const idx = sorted.indexOf(current);
   const next = idx >= 0 ? sorted[(idx + 1) % sorted.length]! : sorted[0]!;
   Targeting.targetEid[pid] = next;
@@ -770,4 +799,305 @@ function clamp(v: number, min: number, max: number) {
 
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROTON TORPEDO SYSTEMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const torpedoLauncherQuery = defineQuery([TorpedoLauncher, Transform, Targeting, PlayerControlled]);
+const torpedoProjectileQuery = defineQuery([TorpedoProjectile, Transform, Velocity]);
+
+const tmpTorpedoDir = new Vector3();
+const tmpTorpedoToTarget = new Vector3();
+
+/**
+ * Updates torpedo lock-on progress based on target position.
+ * Lock builds when target is in front cone and in range, decays otherwise.
+ */
+export function torpedoLockSystem(world: IWorld, input: SpaceInputState, dt: number): void {
+  const launchers = torpedoLauncherQuery(world);
+
+  for (const eid of launchers) {
+    const targetEid = Targeting.targetEid[eid] ?? -1;
+    const currentLockTarget = TorpedoLauncher.lockTargetEid[eid] ?? -1;
+    const lockTime = TorpedoLauncher.lockTime[eid] ?? 2.0;
+    let lockProgress = TorpedoLauncher.lockProgress[eid] ?? 0;
+
+    // Reset lock if target changed or invalid
+    if (targetEid !== currentLockTarget) {
+      TorpedoLauncher.lockTargetEid[eid] = targetEid;
+      TorpedoLauncher.lockProgress[eid] = 0;
+      if (targetEid < 0) continue;
+    }
+
+    if (targetEid < 0 || !hasComponent(world, Transform, targetEid)) {
+      TorpedoLauncher.lockProgress[eid] = 0;
+      continue;
+    }
+
+    // Check if target is in valid lock cone (front 60 degrees) and range
+    const sx = Transform.x[eid] ?? 0;
+    const sy = Transform.y[eid] ?? 0;
+    const sz = Transform.z[eid] ?? 0;
+    const tx = Transform.x[targetEid] ?? 0;
+    const ty = Transform.y[targetEid] ?? 0;
+    const tz = Transform.z[targetEid] ?? 0;
+
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const dz = tz - sz;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    tmpQ.set(
+      Transform.qx[eid] ?? 0,
+      Transform.qy[eid] ?? 0,
+      Transform.qz[eid] ?? 0,
+      Transform.qw[eid] ?? 1
+    );
+    tmpForward.set(0, 0, -1).applyQuaternion(tmpQ).normalize();
+
+    const dot = (dx * tmpForward.x + dy * tmpForward.y + dz * tmpForward.z) / Math.max(1, dist);
+    const inCone = dot > 0.5;  // ~60 degree cone
+    const inRange = dist < 1200;  // Torpedo effective range
+
+    if (inCone && inRange) {
+      // Progress lock
+      lockProgress = Math.min(1, lockProgress + dt / lockTime);
+    } else {
+      // Decay lock when target leaves cone
+      lockProgress = Math.max(0, lockProgress - dt / (lockTime * 2));
+    }
+
+    TorpedoLauncher.lockProgress[eid] = lockProgress;
+  }
+}
+
+/**
+ * Handles weapon switching between lasers and torpedoes.
+ */
+export function weaponSwitchSystem(world: IWorld, input: SpaceInputState): void {
+  if (!input.switchWeapon) return;
+
+  const players = playerQuery(world);
+  for (const eid of players) {
+    if (!hasComponent(world, WeaponLoadout, eid)) continue;
+    const current = WeaponLoadout.activeWeapon[eid] ?? 0;
+    WeaponLoadout.activeWeapon[eid] = current === 0 ? 1 : 0;
+  }
+}
+
+/**
+ * Fires proton torpedoes when locked and triggered.
+ */
+export function torpedoFireSystem(world: IWorld, input: SpaceInputState, dt: number): void {
+  const launchers = torpedoLauncherQuery(world);
+
+  for (const eid of launchers) {
+    // Update cooldown
+    const cdRem = Math.max(0, (TorpedoLauncher.cooldownRemaining[eid] ?? 0) - dt);
+    TorpedoLauncher.cooldownRemaining[eid] = cdRem;
+
+    if (!input.fireSecondary || cdRem > 0) continue;
+
+    const ammo = TorpedoLauncher.ammo[eid] ?? 0;
+    const lockProgress = TorpedoLauncher.lockProgress[eid] ?? 0;
+
+    // Require lock and ammo to fire
+    if (ammo <= 0 || lockProgress < 0.99) continue;
+
+    // Fire torpedo!
+    TorpedoLauncher.ammo[eid] = ammo - 1;
+    TorpedoLauncher.cooldownRemaining[eid] = TorpedoLauncher.cooldown[eid] ?? 1.5;
+
+    const targetEid = TorpedoLauncher.lockTargetEid[eid] ?? -1;
+    fireTorpedo(world, eid, targetEid);
+  }
+}
+
+function fireTorpedo(world: IWorld, shooterEid: number, targetEid: number): void {
+  const sx = Transform.x[shooterEid] ?? 0;
+  const sy = Transform.y[shooterEid] ?? 0;
+  const sz = Transform.z[shooterEid] ?? 0;
+
+  tmpQ.set(
+    Transform.qx[shooterEid] ?? 0,
+    Transform.qy[shooterEid] ?? 0,
+    Transform.qz[shooterEid] ?? 0,
+    Transform.qw[shooterEid] ?? 1
+  );
+  tmpForward.set(0, 0, -1).applyQuaternion(tmpQ).normalize();
+
+  const projSpeed = TorpedoLauncher.projectileSpeed[shooterEid] ?? 450;
+  const damage = TorpedoLauncher.damage[shooterEid] ?? 150;
+  const trackingStrength = TorpedoLauncher.trackingStrength[shooterEid] ?? 0.85;
+
+  const svx = Velocity.vx[shooterEid] ?? 0;
+  const svy = Velocity.vy[shooterEid] ?? 0;
+  const svz = Velocity.vz[shooterEid] ?? 0;
+
+  const pid = addEntity(world);
+  addComponent(world, Transform, pid);
+  addComponent(world, Velocity, pid);
+  addComponent(world, TorpedoProjectile, pid);
+
+  // Spawn slightly ahead of ship
+  Transform.x[pid] = sx + tmpForward.x * 15;
+  Transform.y[pid] = sy + tmpForward.y * 15;
+  Transform.z[pid] = sz + tmpForward.z * 15;
+  Transform.qx[pid] = tmpQ.x;
+  Transform.qy[pid] = tmpQ.y;
+  Transform.qz[pid] = tmpQ.z;
+  Transform.qw[pid] = tmpQ.w;
+
+  Velocity.vx[pid] = svx + tmpForward.x * projSpeed;
+  Velocity.vy[pid] = svy + tmpForward.y * projSpeed;
+  Velocity.vz[pid] = svz + tmpForward.z * projSpeed;
+
+  TorpedoProjectile.life[pid] = 8.0;  // 8 second lifetime
+  TorpedoProjectile.owner[pid] = shooterEid;
+  TorpedoProjectile.damage[pid] = damage;
+  TorpedoProjectile.targetEid[pid] = targetEid;
+  TorpedoProjectile.trackingStrength[pid] = trackingStrength;
+}
+
+/**
+ * Updates torpedo projectiles - tracking and collision.
+ */
+export function torpedoProjectileSystem(world: IWorld, dt: number): void {
+  const torpedoes = torpedoProjectileQuery(world);
+  const targets = combatTargetQuery(world);
+
+  for (const eid of torpedoes) {
+    const life = (TorpedoProjectile.life[eid] ?? 0) - dt;
+    TorpedoProjectile.life[eid] = life;
+
+    if (life <= 0) {
+      removeEntity(world, eid);
+      continue;
+    }
+
+    const px = Transform.x[eid] ?? 0;
+    const py = Transform.y[eid] ?? 0;
+    const pz = Transform.z[eid] ?? 0;
+
+    let vx = Velocity.vx[eid] ?? 0;
+    let vy = Velocity.vy[eid] ?? 0;
+    let vz = Velocity.vz[eid] ?? 0;
+
+    // Tracking behavior
+    const targetEid = TorpedoProjectile.targetEid[eid] ?? -1;
+    const trackingStrength = TorpedoProjectile.trackingStrength[eid] ?? 0.85;
+
+    if (targetEid >= 0 && hasComponent(world, Transform, targetEid)) {
+      const tx = Transform.x[targetEid] ?? 0;
+      const ty = Transform.y[targetEid] ?? 0;
+      const tz = Transform.z[targetEid] ?? 0;
+
+      // Lead target if it has velocity
+      let leadX = tx, leadY = ty, leadZ = tz;
+      if (hasComponent(world, Velocity, targetEid)) {
+        const tvx = Velocity.vx[targetEid] ?? 0;
+        const tvy = Velocity.vy[targetEid] ?? 0;
+        const tvz = Velocity.vz[targetEid] ?? 0;
+        const dist = Math.sqrt((tx - px) ** 2 + (ty - py) ** 2 + (tz - pz) ** 2);
+        const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        const eta = dist / Math.max(1, speed);
+        leadX = tx + tvx * eta * 0.5;
+        leadY = ty + tvy * eta * 0.5;
+        leadZ = tz + tvz * eta * 0.5;
+      }
+
+      // Compute desired direction to target
+      tmpTorpedoToTarget.set(leadX - px, leadY - py, leadZ - pz).normalize();
+
+      // Current velocity direction
+      const currentSpeed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      tmpTorpedoDir.set(vx, vy, vz).normalize();
+
+      // Blend toward target direction
+      const blendFactor = trackingStrength * dt * 3;
+      tmpTorpedoDir.lerp(tmpTorpedoToTarget, blendFactor).normalize();
+
+      // Apply new velocity
+      vx = tmpTorpedoDir.x * currentSpeed;
+      vy = tmpTorpedoDir.y * currentSpeed;
+      vz = tmpTorpedoDir.z * currentSpeed;
+
+      Velocity.vx[eid] = vx;
+      Velocity.vy[eid] = vy;
+      Velocity.vz[eid] = vz;
+    }
+
+    // Update position
+    Transform.x[eid] = px + vx * dt;
+    Transform.y[eid] = py + vy * dt;
+    Transform.z[eid] = pz + vz * dt;
+
+    // Collision detection
+    const owner = TorpedoProjectile.owner[eid] ?? -1;
+    const dmg = TorpedoProjectile.damage[eid] ?? 150;
+    const ownerTeam = owner >= 0 && hasComponent(world, Team, owner) ? (Team.id[owner] ?? -1) : -1;
+
+    const newPx = Transform.x[eid] ?? 0;
+    const newPy = Transform.y[eid] ?? 0;
+    const newPz = Transform.z[eid] ?? 0;
+
+    for (const tid of targets) {
+      if (tid === owner) continue;
+      if (ownerTeam !== -1 && hasComponent(world, Team, tid) && (Team.id[tid] ?? -2) === ownerTeam) {
+        continue;
+      }
+
+      const dx = (Transform.x[tid] ?? 0) - newPx;
+      const dy = (Transform.y[tid] ?? 0) - newPy;
+      const dz = (Transform.z[tid] ?? 0) - newPz;
+      const r = (HitRadius.r[tid] ?? 8) + 5;  // Larger hit radius for torpedoes
+
+      if (dx * dx + dy * dy + dz * dz <= r * r) {
+        // Hit! Torpedoes bypass shields partially
+        const shieldSp = Shield.sp[tid];
+        if (shieldSp !== undefined && Shield.maxSp[tid] !== undefined) {
+          const shieldDamage = dmg * 0.4;  // 40% absorbed by shields
+          const hullDamage = dmg * 0.6;    // 60% goes through
+          Shield.sp[tid] = Math.max(0, shieldSp - shieldDamage);
+          Shield.lastHit[tid] = 0;
+          Health.hp[tid] = (Health.hp[tid] ?? 0) - hullDamage;
+        } else {
+          Health.hp[tid] = (Health.hp[tid] ?? 0) - dmg;
+        }
+
+        removeEntity(world, eid);
+        const killed = (Health.hp[tid] ?? 0) <= 0;
+        impactEvents.push({ x: newPx, y: newPy, z: newPz, team: ownerTeam, killed: killed ? 1 : 0 });
+
+        if (killed) {
+          removeEntity(world, tid);
+        }
+        break;
+      }
+    }
+  }
+}
+
+/**
+ * Get current torpedo ammo and lock state for HUD display.
+ */
+export function getTorpedoState(world: IWorld): { ammo: number; maxAmmo: number; lockProgress: number; activeWeapon: number } | null {
+  const players = playerQuery(world);
+  if (players.length === 0) return null;
+
+  const eid = players[0];
+  if (eid === undefined || !hasComponent(world, TorpedoLauncher, eid)) return null;
+
+  return {
+    ammo: TorpedoLauncher.ammo[eid] ?? 0,
+    maxAmmo: TorpedoLauncher.maxAmmo[eid] ?? 6,
+    lockProgress: TorpedoLauncher.lockProgress[eid] ?? 0,
+    activeWeapon: hasComponent(world, WeaponLoadout, eid) ? (WeaponLoadout.activeWeapon[eid] ?? 0) : 0
+  };
+}
+
+export function getTorpedoProjectiles(world: IWorld): number[] {
+  return torpedoProjectileQuery(world);
 }

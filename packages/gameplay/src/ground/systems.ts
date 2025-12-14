@@ -18,7 +18,12 @@ import {
   Enterable,
   BlasterWeapon,
   CommandPost,
-  GroundAI
+  GroundAI,
+  Stamina,
+  DodgeRoll,
+  WeaponHeat,
+  GrenadeInventory,
+  Grenade
 } from "./components";
 import {
   Transform,
@@ -246,6 +251,8 @@ export function syncPlayerGroundInput(
   GroundInput.aimPitch[playerEid] = input.aimPitch;
   GroundInput.interact[playerEid] = input.interact ? 1 : 0;
   GroundInput.firePrimary[playerEid] = input.firePrimary ? 1 : 0;
+  GroundInput.dodge[playerEid] = input.dodge ? 1 : 0;
+  GroundInput.throwGrenade[playerEid] = input.throwGrenade ? 1 : 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -361,9 +368,29 @@ export function blasterSystem(
     const wantsFire = (GroundInput.firePrimary[eid] ?? 0) !== 0;
     if (!wantsFire || cdRem > 0) continue;
 
+    // Check weapon heat - don't fire if overheated
+    if (hasComponent(world, WeaponHeat, eid)) {
+      if ((WeaponHeat.overheated[eid] ?? 0) !== 0) continue;
+    }
+
     // Fire!
     const fireRate = BlasterWeapon.fireRate[eid] ?? 5;
     BlasterWeapon.cooldownRemaining[eid] = 1 / fireRate;
+
+    // Add weapon heat
+    if (hasComponent(world, WeaponHeat, eid)) {
+      const heat = WeaponHeat.current[eid] ?? 0;
+      const heatPerShot = WeaponHeat.heatPerShot[eid] ?? 10;
+      const newHeat = heat + heatPerShot;
+      WeaponHeat.current[eid] = newHeat;
+      WeaponHeat.timeSinceShot[eid] = 0;
+
+      // Check for overheat
+      if (newHeat >= 100) {
+        WeaponHeat.overheated[eid] = 1;
+        WeaponHeat.current[eid] = 100;
+      }
+    }
 
     const sx = Transform.x[eid] ?? 0;
     const sy = Transform.y[eid] ?? 0;
@@ -396,6 +423,11 @@ export function blasterSystem(
     for (const tid of targets) {
       if (tid === eid) continue;
       if ((Team.id[tid] ?? -1) === myTeam) continue;
+
+      // Skip targets with active i-frames (dodge rolling)
+      if (hasComponent(world, DodgeRoll, tid)) {
+        if ((DodgeRoll.iFrames[tid] ?? 0) !== 0) continue;
+      }
 
       const tx = Transform.x[tid] ?? 0;
       const ty = Transform.y[tid] ?? 0;
@@ -673,10 +705,377 @@ export function groundAISystem(world: IWorld, dt: number): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// STAMINA SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+const staminaQuery = defineQuery([InGroundDomain, Stamina, GroundInput]);
+
+export function staminaSystem(world: IWorld, dt: number): void {
+  const entities = staminaQuery(world);
+
+  for (const eid of entities) {
+    const isSprinting = (GroundInput.sprint[eid] ?? 0) !== 0;
+    const isMoving = Math.abs(GroundInput.moveX[eid] ?? 0) > 0.1 || Math.abs(GroundInput.moveZ[eid] ?? 0) > 0.1;
+
+    let current = Stamina.current[eid] ?? 100;
+    const max = Stamina.max[eid] ?? 100;
+    const regenRate = Stamina.regenRate[eid] ?? 20;
+    const regenDelay = Stamina.regenDelay[eid] ?? 1.5;
+    const sprintDrain = Stamina.sprintDrainRate[eid] ?? 15;
+    let timeSinceDrain = Stamina.timeSinceDrain[eid] ?? 0;
+
+    if (isSprinting && isMoving && current > 0) {
+      // Drain stamina while sprinting
+      current -= sprintDrain * dt;
+      timeSinceDrain = 0;
+
+      // Disable sprint if out of stamina
+      if (current <= 0) {
+        current = 0;
+        GroundInput.sprint[eid] = 0;
+      }
+    } else {
+      // Regenerate stamina after delay
+      timeSinceDrain += dt;
+      if (timeSinceDrain >= regenDelay) {
+        current = Math.min(max, current + regenRate * dt);
+      }
+    }
+
+    Stamina.current[eid] = current;
+    Stamina.timeSinceDrain[eid] = timeSinceDrain;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DODGE ROLL SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+const dodgeRollQuery = defineQuery([InGroundDomain, DodgeRoll, Stamina, GroundInput, Transform]);
+
+export const enum DodgeRollState {
+  Ready = 0,
+  Rolling = 1,
+  Cooldown = 2
+}
+
+export function dodgeRollSystem(
+  world: IWorld,
+  physics: PhysicsWorld,
+  dt: number
+): void {
+  const entities = dodgeRollQuery(world);
+
+  for (const eid of entities) {
+    let state = DodgeRoll.state[eid] ?? DodgeRollState.Ready;
+    let timer = DodgeRoll.timer[eid] ?? 0;
+    const rollDuration = DodgeRoll.rollDuration[eid] ?? 0.5;
+    const cooldown = DodgeRoll.cooldown[eid] ?? 1.0;
+    const staminaCost = DodgeRoll.staminaCost[eid] ?? 25;
+    const rollSpeed = DodgeRoll.rollSpeed[eid] ?? 8.0;
+
+    // Check for dodge input
+    const wantsDodge = (GroundInput.dodge[eid] ?? 0) !== 0;
+    GroundInput.dodge[eid] = 0; // Consume input
+
+    if (state === DodgeRollState.Ready && wantsDodge) {
+      const stamina = Stamina.current[eid] ?? 0;
+      if (stamina >= staminaCost) {
+        // Start dodge roll
+        state = DodgeRollState.Rolling;
+        timer = rollDuration;
+        DodgeRoll.iFrames[eid] = 1;
+
+        // Consume stamina
+        Stamina.current[eid] = stamina - staminaCost;
+        Stamina.timeSinceDrain[eid] = 0;
+
+        // Set roll direction from input or forward
+        const inputX = GroundInput.moveX[eid] ?? 0;
+        const inputZ = GroundInput.moveZ[eid] ?? 0;
+        const yaw = GroundInput.aimYaw[eid] ?? 0;
+
+        if (Math.abs(inputX) > 0.1 || Math.abs(inputZ) > 0.1) {
+          // Roll in input direction
+          tmpForward.set(0, 0, -1).applyAxisAngle(tmpUp, yaw);
+          tmpRight.set(1, 0, 0).applyAxisAngle(tmpUp, yaw);
+          tmpMoveDir.set(0, 0, 0);
+          tmpMoveDir.addScaledVector(tmpRight, inputX);
+          tmpMoveDir.addScaledVector(tmpForward, inputZ);
+          tmpMoveDir.normalize();
+          DodgeRoll.directionX[eid] = tmpMoveDir.x;
+          DodgeRoll.directionZ[eid] = tmpMoveDir.z;
+        } else {
+          // Roll forward
+          tmpForward.set(0, 0, -1).applyAxisAngle(tmpUp, yaw);
+          DodgeRoll.directionX[eid] = tmpForward.x;
+          DodgeRoll.directionZ[eid] = tmpForward.z;
+        }
+      }
+    }
+
+    // Update state timer
+    if (state === DodgeRollState.Rolling) {
+      timer -= dt;
+      if (timer <= 0) {
+        state = DodgeRollState.Cooldown;
+        timer = cooldown;
+        DodgeRoll.iFrames[eid] = 0;
+      } else {
+        // Apply roll movement
+        const controller = physics.characterControllers.get(eid);
+        const collider = physics.colliders.get(eid);
+        if (controller && collider) {
+          const dirX = DodgeRoll.directionX[eid] ?? 0;
+          const dirZ = DodgeRoll.directionZ[eid] ?? 0;
+          tmpDesiredMove.set(
+            dirX * rollSpeed * dt,
+            -0.1 * dt, // Small downward to stay grounded
+            dirZ * rollSpeed * dt
+          );
+          controller.computeColliderMovement(collider, tmpDesiredMove);
+          const correctedMove = controller.computedMovement();
+          Transform.x[eid] = (Transform.x[eid] ?? 0) + correctedMove.x;
+          Transform.y[eid] = (Transform.y[eid] ?? 0) + correctedMove.y;
+          Transform.z[eid] = (Transform.z[eid] ?? 0) + correctedMove.z;
+
+          // Sync rigid body
+          const body = physics.rigidBodies.get(eid);
+          if (body) {
+            body.setTranslation(
+              { x: Transform.x[eid]!, y: Transform.y[eid]!, z: Transform.z[eid]! },
+              true
+            );
+          }
+        }
+      }
+    } else if (state === DodgeRollState.Cooldown) {
+      timer -= dt;
+      if (timer <= 0) {
+        state = DodgeRollState.Ready;
+        timer = 0;
+      }
+    }
+
+    DodgeRoll.state[eid] = state;
+    DodgeRoll.timer[eid] = timer;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WEAPON HEAT SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+const weaponHeatQuery = defineQuery([InGroundDomain, WeaponHeat, BlasterWeapon]);
+
+export function weaponHeatSystem(world: IWorld, dt: number): void {
+  const entities = weaponHeatQuery(world);
+
+  for (const eid of entities) {
+    let heat = WeaponHeat.current[eid] ?? 0;
+    const cooldownRate = WeaponHeat.cooldownRate[eid] ?? 25;
+    const cooldownDelay = WeaponHeat.cooldownDelay[eid] ?? 0.3;
+    const overheatCoolRate = WeaponHeat.overheatCoolRate[eid] ?? 40;
+    let timeSinceShot = WeaponHeat.timeSinceShot[eid] ?? 0;
+    let overheated = (WeaponHeat.overheated[eid] ?? 0) !== 0;
+
+    timeSinceShot += dt;
+
+    // Cool down weapon
+    if (overheated) {
+      // Faster cooldown during overheat state
+      heat = Math.max(0, heat - overheatCoolRate * dt);
+      if (heat <= 0) {
+        overheated = false;
+        heat = 0;
+      }
+    } else if (timeSinceShot >= cooldownDelay) {
+      heat = Math.max(0, heat - cooldownRate * dt);
+    }
+
+    WeaponHeat.current[eid] = heat;
+    WeaponHeat.timeSinceShot[eid] = timeSinceShot;
+    WeaponHeat.overheated[eid] = overheated ? 1 : 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRENADE SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+const grenadeInventoryQuery = defineQuery([InGroundDomain, GrenadeInventory, GroundInput, Transform, Team]);
+const activeGrenadeQuery = defineQuery([Grenade, Transform, Velocity]);
+
+export type GrenadeExplosionEvent = {
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+  damage: number;
+  throwerTeam: number;
+};
+
+const grenadeExplosionEvents: GrenadeExplosionEvent[] = [];
+
+export function consumeGrenadeExplosionEvents(): GrenadeExplosionEvent[] {
+  return grenadeExplosionEvents.splice(0, grenadeExplosionEvents.length);
+}
+
+export function grenadeThrowSystem(
+  world: IWorld,
+  dt: number
+): void {
+  const entities = grenadeInventoryQuery(world);
+
+  for (const eid of entities) {
+    // Update cooldown
+    const cdRem = (GrenadeInventory.cooldown[eid] ?? 0) - dt;
+    GrenadeInventory.cooldown[eid] = Math.max(0, cdRem);
+
+    const wantsThrow = (GroundInput.throwGrenade[eid] ?? 0) !== 0;
+    GroundInput.throwGrenade[eid] = 0; // Consume input
+
+    if (!wantsThrow || cdRem > 0) continue;
+
+    const count = GrenadeInventory.count[eid] ?? 0;
+    if (count <= 0) continue;
+
+    // Spawn grenade
+    const grenadeEid = addEntity(world);
+    addComponent(world, Transform, grenadeEid);
+    addComponent(world, Velocity, grenadeEid);
+    addComponent(world, Grenade, grenadeEid);
+
+    // Position at thrower
+    const sx = Transform.x[eid] ?? 0;
+    const sy = (Transform.y[eid] ?? 0) + 1.5; // Throw from chest height
+    const sz = Transform.z[eid] ?? 0;
+
+    Transform.x[grenadeEid] = sx;
+    Transform.y[grenadeEid] = sy;
+    Transform.z[grenadeEid] = sz;
+    Transform.qx[grenadeEid] = 0;
+    Transform.qy[grenadeEid] = 0;
+    Transform.qz[grenadeEid] = 0;
+    Transform.qw[grenadeEid] = 1;
+
+    // Calculate throw direction from aim
+    const yaw = GroundInput.aimYaw[eid] ?? 0;
+    const pitch = GroundInput.aimPitch[eid] ?? 0;
+    tmpForward.set(0, 0, -1);
+    tmpQuat.setFromAxisAngle(tmpUp, yaw);
+    tmpForward.applyQuaternion(tmpQuat);
+    tmpRight.set(1, 0, 0).applyQuaternion(tmpQuat);
+    tmpQuat.setFromAxisAngle(tmpRight, pitch);
+    tmpForward.applyQuaternion(tmpQuat).normalize();
+
+    // Throw velocity (15 m/s + upward arc)
+    const throwSpeed = 15;
+    Velocity.vx[grenadeEid] = tmpForward.x * throwSpeed;
+    Velocity.vy[grenadeEid] = tmpForward.y * throwSpeed + 5; // Arc upward
+    Velocity.vz[grenadeEid] = tmpForward.z * throwSpeed;
+
+    // Grenade properties
+    const grenadeType = GrenadeInventory.type[eid] ?? 0;
+    Grenade.throwerEid[grenadeEid] = eid;
+    Grenade.type[grenadeEid] = grenadeType;
+    Grenade.fuseTime[grenadeEid] = grenadeType === 1 ? 0.1 : 3.0; // Impact vs Thermal
+    Grenade.damage[grenadeEid] = 100;
+    Grenade.blastRadius[grenadeEid] = 6;
+    Grenade.bounced[grenadeEid] = 0;
+
+    // Consume grenade and start cooldown
+    GrenadeInventory.count[eid] = count - 1;
+    GrenadeInventory.cooldown[eid] = GrenadeInventory.cooldownMax[eid] ?? 5;
+  }
+}
+
+export function grenadeFlightSystem(world: IWorld, dt: number): void {
+  const grenades = activeGrenadeQuery(world);
+  const targets = groundCombatantQuery(world);
+
+  for (const eid of grenades) {
+    // Apply gravity
+    Velocity.vy[eid] = (Velocity.vy[eid] ?? 0) - 9.81 * dt;
+
+    // Update position
+    Transform.x[eid] = (Transform.x[eid] ?? 0) + (Velocity.vx[eid] ?? 0) * dt;
+    Transform.y[eid] = (Transform.y[eid] ?? 0) + (Velocity.vy[eid] ?? 0) * dt;
+    Transform.z[eid] = (Transform.z[eid] ?? 0) + (Velocity.vz[eid] ?? 0) * dt;
+
+    // Ground collision (simple check)
+    if ((Transform.y[eid] ?? 0) <= 0) {
+      Transform.y[eid] = 0;
+      Velocity.vy[eid] = Math.abs(Velocity.vy[eid] ?? 0) * 0.3; // Bounce
+      Velocity.vx[eid] = (Velocity.vx[eid] ?? 0) * 0.7; // Friction
+      Velocity.vz[eid] = (Velocity.vz[eid] ?? 0) * 0.7;
+      Grenade.bounced[eid] = 1;
+
+      // Impact grenades explode on bounce
+      if ((Grenade.type[eid] ?? 0) === 1) {
+        Grenade.fuseTime[eid] = 0;
+      }
+    }
+
+    // Update fuse
+    const fuseTime = (Grenade.fuseTime[eid] ?? 0) - dt;
+    Grenade.fuseTime[eid] = fuseTime;
+
+    // Explode
+    if (fuseTime <= 0) {
+      const gx = Transform.x[eid] ?? 0;
+      const gy = Transform.y[eid] ?? 0;
+      const gz = Transform.z[eid] ?? 0;
+      const damage = Grenade.damage[eid] ?? 100;
+      const radius = Grenade.blastRadius[eid] ?? 6;
+      const throwerEid = Grenade.throwerEid[eid] ?? -1;
+      const throwerTeam = throwerEid >= 0 ? (Team.id[throwerEid] ?? 0) : 0;
+
+      // Damage nearby targets
+      for (const tid of targets) {
+        // Skip targets with active i-frames (dodge rolling)
+        if (hasComponent(world, DodgeRoll, tid)) {
+          if ((DodgeRoll.iFrames[tid] ?? 0) !== 0) continue;
+        }
+
+        const dx = (Transform.x[tid] ?? 0) - gx;
+        const dy = (Transform.y[tid] ?? 0) - gy;
+        const dz = (Transform.z[tid] ?? 0) - gz;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (dist < radius) {
+          // Damage falloff with distance
+          const falloff = 1 - (dist / radius);
+          const actualDamage = damage * falloff;
+          Health.hp[tid] = (Health.hp[tid] ?? 0) - actualDamage;
+
+          if ((Health.hp[tid] ?? 0) <= 0) {
+            removeEntity(world, tid);
+          }
+        }
+      }
+
+      // Record explosion event for VFX
+      grenadeExplosionEvents.push({
+        x: gx,
+        y: gy,
+        z: gz,
+        radius,
+        damage,
+        throwerTeam
+      });
+
+      // Remove grenade
+      removeEntity(world, eid);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SPAWN HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type SoldierClass = 0 | 1 | 2; // Assault, Heavy, Sniper
+export type SoldierClass = 0 | 1 | 2 | 3; // Assault, Heavy, Sniper, Officer
 
 const CLASS_STATS: Array<{
   walk: number;
@@ -688,13 +1087,18 @@ const CLASS_STATS: Array<{
   blasterRate: number;
   blasterRange: number;
   blasterSpread: number;
+  heatPerShot: number;
+  grenades: number;
+  grenadeType: number;
 }> = [
-  // Assault
-  { walk: 4.5, sprint: 7.0, crouch: 2.0, jump: 5.0, ammo: 200, blasterDamage: 15, blasterRate: 8, blasterRange: 100, blasterSpread: 0.03 },
-  // Heavy
-  { walk: 3.5, sprint: 5.5, crouch: 1.5, jump: 4.0, ammo: 300, blasterDamage: 25, blasterRate: 4, blasterRange: 80, blasterSpread: 0.05 },
-  // Sniper
-  { walk: 4.0, sprint: 6.5, crouch: 1.8, jump: 5.5, ammo: 50, blasterDamage: 80, blasterRate: 1, blasterRange: 200, blasterSpread: 0.005 }
+  // Assault - balanced, high mobility
+  { walk: 4.5, sprint: 7.0, crouch: 2.0, jump: 5.0, ammo: 200, blasterDamage: 15, blasterRate: 8, blasterRange: 100, blasterSpread: 0.03, heatPerShot: 8, grenades: 3, grenadeType: 0 },
+  // Heavy - slower, high damage, high heat
+  { walk: 3.5, sprint: 5.5, crouch: 1.5, jump: 4.0, ammo: 300, blasterDamage: 25, blasterRate: 4, blasterRange: 80, blasterSpread: 0.05, heatPerShot: 15, grenades: 2, grenadeType: 1 },
+  // Sniper - precise, low heat, few shots
+  { walk: 4.0, sprint: 6.5, crouch: 1.8, jump: 5.5, ammo: 50, blasterDamage: 80, blasterRate: 1, blasterRange: 200, blasterSpread: 0.005, heatPerShot: 25, grenades: 1, grenadeType: 2 },
+  // Officer - support, medium stats
+  { walk: 4.2, sprint: 6.5, crouch: 1.9, jump: 4.5, ammo: 150, blasterDamage: 18, blasterRate: 6, blasterRange: 90, blasterSpread: 0.025, heatPerShot: 10, grenades: 2, grenadeType: 3 }
 ];
 
 export function spawnSoldier(
@@ -723,6 +1127,12 @@ export function spawnSoldier(
   addComponent(world, Soldier, eid);
   addComponent(world, Piloting, eid);
   addComponent(world, BlasterWeapon, eid);
+
+  // Phase 1: Enhanced infantry components
+  addComponent(world, Stamina, eid);
+  addComponent(world, DodgeRoll, eid);
+  addComponent(world, WeaponHeat, eid);
+  addComponent(world, GrenadeInventory, eid);
 
   // Set transform
   Transform.x[eid] = x;
@@ -760,6 +1170,41 @@ export function spawnSoldier(
   BlasterWeapon.range[eid] = stats.blasterRange;
   BlasterWeapon.spread[eid] = stats.blasterSpread;
 
+  // Stamina (for sprint and dodge roll)
+  Stamina.current[eid] = 100;
+  Stamina.max[eid] = 100;
+  Stamina.regenRate[eid] = 20;
+  Stamina.regenDelay[eid] = 1.5;
+  Stamina.timeSinceDrain[eid] = 10; // Start ready to regen
+  Stamina.sprintDrainRate[eid] = 15;
+
+  // Dodge roll
+  DodgeRoll.state[eid] = DodgeRollState.Ready;
+  DodgeRoll.timer[eid] = 0;
+  DodgeRoll.rollDuration[eid] = 0.5;
+  DodgeRoll.cooldown[eid] = 1.0;
+  DodgeRoll.staminaCost[eid] = 25;
+  DodgeRoll.rollSpeed[eid] = 8.0;
+  DodgeRoll.directionX[eid] = 0;
+  DodgeRoll.directionZ[eid] = 1;
+  DodgeRoll.iFrames[eid] = 0;
+
+  // Weapon heat
+  WeaponHeat.current[eid] = 0;
+  WeaponHeat.heatPerShot[eid] = stats.heatPerShot;
+  WeaponHeat.cooldownRate[eid] = 25;
+  WeaponHeat.cooldownDelay[eid] = 0.3;
+  WeaponHeat.timeSinceShot[eid] = 10;
+  WeaponHeat.overheated[eid] = 0;
+  WeaponHeat.overheatCoolRate[eid] = 40;
+
+  // Grenades
+  GrenadeInventory.count[eid] = stats.grenades;
+  GrenadeInventory.maxCount[eid] = stats.grenades;
+  GrenadeInventory.type[eid] = stats.grenadeType;
+  GrenadeInventory.cooldown[eid] = 0;
+  GrenadeInventory.cooldownMax[eid] = 5;
+
   // Character controller
   const capsuleRadius = 0.35;
   const capsuleHalfHeight = 0.55; // Total height ~1.8m
@@ -782,6 +1227,8 @@ export function spawnSoldier(
   GroundInput.aimPitch[eid] = 0;
   GroundInput.interact[eid] = 0;
   GroundInput.firePrimary[eid] = 0;
+  GroundInput.dodge[eid] = 0;
+  GroundInput.throwGrenade[eid] = 0;
 
   // AI components
   if (isAI) {

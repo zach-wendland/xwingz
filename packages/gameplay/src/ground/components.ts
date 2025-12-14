@@ -35,20 +35,105 @@ export const GroundInput = defineComponent({
   aimYaw: Types.f32,     // radians (mouse X accumulator)
   aimPitch: Types.f32,   // radians (clamped -80° to +80°)
   interact: Types.ui8,   // 0 or 1 (E key, consumed each frame)
-  firePrimary: Types.ui8 // 0 or 1 (mouse left / space)
+  firePrimary: Types.ui8, // 0 or 1 (mouse left / space)
+  dodge: Types.ui8,      // 0 or 1 (Alt key, consumed each frame)
+  throwGrenade: Types.ui8 // 0 or 1 (G key, consumed each frame)
 });
 
 /**
  * Infantry soldier stats.
  */
 export const Soldier = defineComponent({
-  classId: Types.ui8,        // 0=Assault, 1=Heavy, 2=Sniper
+  classId: Types.ui8,        // 0=Assault, 1=Heavy, 2=Sniper, 3=Officer
   walkSpeed: Types.f32,      // 4.5 m/s default
   sprintSpeed: Types.f32,    // 7.0 m/s
   crouchSpeed: Types.f32,    // 2.0 m/s
   jumpImpulse: Types.f32,    // ~5.0 m/s upward
   ammo: Types.ui16,
   maxAmmo: Types.ui16
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAMINA SYSTEM (for sprint and dodge roll)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Stamina for sprint and dodge roll mechanics.
+ * Drains while sprinting/dodging, regenerates when idle.
+ */
+export const Stamina = defineComponent({
+  current: Types.f32,        // 0..max
+  max: Types.f32,            // 100 default
+  regenRate: Types.f32,      // per second when not sprinting (20/s default)
+  regenDelay: Types.f32,     // seconds before regen starts (1.5s default)
+  timeSinceDrain: Types.f32, // tracks time since last stamina use
+  sprintDrainRate: Types.f32 // per second while sprinting (15/s default)
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DODGE ROLL (Battlefront-style evasion with i-frames)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Dodge roll state for evasive maneuvers.
+ * Provides brief invincibility during roll animation.
+ */
+export const DodgeRoll = defineComponent({
+  state: Types.ui8,          // 0=Ready, 1=Rolling, 2=Cooldown
+  timer: Types.f32,          // time remaining in current state
+  rollDuration: Types.f32,   // how long the roll lasts (0.5s default)
+  cooldown: Types.f32,       // cooldown after roll (1.0s default)
+  staminaCost: Types.f32,    // stamina required to roll (25 default)
+  rollSpeed: Types.f32,      // movement speed during roll (8.0 m/s)
+  directionX: Types.f32,     // roll direction (normalized)
+  directionZ: Types.f32,
+  iFrames: Types.ui8         // 1 if currently invincible, 0 otherwise
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WEAPON HEAT (overheat mechanic for blasters)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Weapon heat system for blasters (replaces traditional ammo).
+ * Heat builds up when firing, cools down when not firing.
+ * Overheat locks weapon until fully cooled.
+ */
+export const WeaponHeat = defineComponent({
+  current: Types.f32,        // 0..100
+  heatPerShot: Types.f32,    // heat added per shot (10 default)
+  cooldownRate: Types.f32,   // heat lost per second (25 default)
+  cooldownDelay: Types.f32,  // seconds before cooldown starts (0.3s)
+  timeSinceShot: Types.f32,  // tracks time since last shot
+  overheated: Types.ui8,     // 1 if locked from overheat
+  overheatCoolRate: Types.f32 // faster cooldown during overheat (40 default)
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRENADE SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Grenade inventory and throw state.
+ */
+export const GrenadeInventory = defineComponent({
+  count: Types.ui8,          // current grenades
+  maxCount: Types.ui8,       // max grenades (3 default)
+  type: Types.ui8,           // 0=Thermal, 1=Impact, 2=Smoke, 3=Ion
+  cooldown: Types.f32,       // time until next throw allowed
+  cooldownMax: Types.f32     // cooldown duration (5s default)
+});
+
+/**
+ * Active grenade projectile in flight.
+ */
+export const Grenade = defineComponent({
+  throwerEid: Types.i32,     // who threw it
+  type: Types.ui8,           // grenade type
+  fuseTime: Types.f32,       // time until detonation
+  damage: Types.f32,         // damage at center
+  blastRadius: Types.f32,    // radius of effect
+  bounced: Types.ui8         // has it bounced? (for impact grenades)
 });
 
 /**

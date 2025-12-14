@@ -125,13 +125,13 @@ export const FIGHTER_ARCHETYPES: FighterArchetype[] = [
     id: "xwing_player",
     tags: ["player", "rebel"],
     factionTag: "republic",
-    maxSpeed: 260,
-    accel: 130,
-    turnRate: 1.35,
-    weaponCooldown: 0.11,
+    maxSpeed: 270,
+    accel: 155,
+    turnRate: 1.55,
+    weaponCooldown: 0.10,
     projectileSpeed: 950,
-    damage: 10,
-    hp: 120,
+    damage: 11,
+    hp: 130,
     hitRadius: 10,
     aggression: 0.5,
     evadeBias: 0.4
@@ -182,3 +182,6 @@ export const FIGHTER_ARCHETYPES: FighterArchetype[] = [
     evadeBias: 0.6
   }
 ];
+
+// Re-export planets
+export * from "./planets";

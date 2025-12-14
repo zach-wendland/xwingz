@@ -12,6 +12,7 @@ import {
   type Vec3i,
   type SystemDef
 } from "@xwingz/procgen";
+import { PLANETS, planetToSystem, type PlanetDef } from "@xwingz/data";
 import {
   AIControlled,
   AngularVelocity,
@@ -41,8 +42,43 @@ import {
   Targetable,
   Targeting,
   Transform,
-  Velocity
+  Velocity,
+  // Torpedo systems
+  torpedoLockSystem,
+  torpedoFireSystem,
+  torpedoProjectileSystem,
+  weaponSwitchSystem,
+  getTorpedoState,
+  getTorpedoProjectiles,
+  TorpedoLauncher,
+  TorpedoProjectile,
+  WeaponLoadout,
+  // Ground combat systems
+  createGroundInput,
+  type GroundInputState,
+  groundMovementSystem,
+  syncPlayerGroundInput,
+  vehicleInteractionSystem,
+  blasterSystem,
+  commandPostSystem,
+  groundAISystem,
+  consumeGroundImpactEvents,
+  spawnSoldier,
+  spawnCommandPost,
+  getPlayerSoldier,
+  InGroundDomain,
+  CharacterController,
+  GroundInput,
+  Soldier,
+  Piloting,
+  CommandPost
 } from "@xwingz/gameplay";
+import {
+  createPhysicsWorld,
+  stepPhysics,
+  createGroundPlane,
+  type PhysicsWorld
+} from "@xwingz/physics";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { addComponent, addEntity, removeEntity, hasComponent } from "bitecs";
@@ -91,8 +127,17 @@ const YAVIN_DEFENSE_SYSTEM: SystemDef = {
   storyAnchorChance: 1
 };
 
-type Mode = "map" | "flight";
+type Mode = "map" | "flight" | "ground";
 let mode: Mode = "map";
+
+// ---- Ground combat state ----
+let physicsWorld: PhysicsWorld | null = null;
+let groundInput: ReturnType<typeof createGroundInput> | null = null;
+let playerSoldierEid: number | null = null;
+let groundCommandPostEids: number[] = [];
+let groundEnemyEids: number[] = [];
+const groundEnemyMeshes = new Map<number, THREE.Object3D>();
+let groundPlayerMesh: THREE.Object3D | null = null;
 
 // ---- Galaxy map state ----
 let centerSector: Vec3i = [0, 0, 0];
@@ -110,20 +155,26 @@ const mouse = new THREE.Vector2();
 const tmpMapMat = new THREE.Matrix4();
 
 type PlanetStyleId = "desert" | "ice" | "jungle" | "ocean" | "volcanic" | "city" | "gas" | "barren" | "mystic";
-type PlanetStyle = { id: PlanetStyleId; base: number; atmos: number; roughness: number };
+type PlanetStyle = { id: PlanetStyleId; base: number; atmos: number; roughness: number; emissive?: number };
 const PLANET_STYLES: PlanetStyle[] = [
-  { id: "desert", base: 0xcaa26a, atmos: 0xffd19a, roughness: 0.95 },
-  { id: "ice", base: 0xa6c9ff, atmos: 0xcfe6ff, roughness: 0.9 },
-  { id: "jungle", base: 0x2f6b42, atmos: 0x7cffc0, roughness: 0.98 },
-  { id: "ocean", base: 0x1a4ea8, atmos: 0x66aaff, roughness: 0.75 },
-  { id: "volcanic", base: 0x3b2622, atmos: 0xff7744, roughness: 0.95 },
-  { id: "city", base: 0x6e7786, atmos: 0xaad4ff, roughness: 0.65 },
-  { id: "gas", base: 0x7c61c8, atmos: 0xd2b7ff, roughness: 0.6 },
-  { id: "barren", base: 0x6c5a4e, atmos: 0xb9b9b9, roughness: 0.98 },
-  { id: "mystic", base: 0x3b1c6b, atmos: 0xad5aff, roughness: 0.7 }
+  // Brighter, more vibrant colors for iconic Star Wars planets
+  { id: "desert", base: 0xe8c080, atmos: 0xffd19a, roughness: 0.85, emissive: 0x1a1408 },
+  { id: "ice", base: 0xc8e0ff, atmos: 0xcfe6ff, roughness: 0.8, emissive: 0x101820 },
+  { id: "jungle", base: 0x4a9860, atmos: 0x7cffc0, roughness: 0.88, emissive: 0x0a1a0c },
+  { id: "ocean", base: 0x3070d0, atmos: 0x66aaff, roughness: 0.65, emissive: 0x081020 },
+  { id: "volcanic", base: 0x6b3830, atmos: 0xff7744, roughness: 0.85, emissive: 0x301008 },
+  { id: "city", base: 0x8898a8, atmos: 0xaad4ff, roughness: 0.55, emissive: 0x181820 },
+  { id: "gas", base: 0xa080e0, atmos: 0xd2b7ff, roughness: 0.5, emissive: 0x180828 },
+  { id: "barren", base: 0x8a7868, atmos: 0xb9b9b9, roughness: 0.9, emissive: 0x0c0a08 },
+  { id: "mystic", base: 0x6040a0, atmos: 0xad5aff, roughness: 0.6, emissive: 0x180830 }
 ];
 
 function pickPlanetStyle(sys: SystemDef): PlanetStyle {
+  // For fixed planets, use archetypeId as style (it's set to planet.style in planetToSystem)
+  const styleId = sys.archetypeId as PlanetStyleId;
+  const fromStyle = PLANET_STYLES.find((s) => s.id === styleId);
+  if (fromStyle) return fromStyle;
+
   if (sys.id === "yavin_4") return PLANET_STYLES.find((s) => s.id === "jungle")!;
   const tags = new Set(sys.tags ?? []);
   if (tags.has("jungle")) return PLANET_STYLES.find((s) => s.id === "jungle")!;
@@ -131,8 +182,6 @@ function pickPlanetStyle(sys: SystemDef): PlanetStyle {
 
   if (sys.starClass === "black_hole" || sys.starClass === "neutron") return PLANET_STYLES.find((s) => s.id === "mystic")!;
   if (sys.controllingFaction === "empire") return PLANET_STYLES.find((s) => s.id === "city")!;
-  if (sys.archetypeId?.includes("trade") || sys.archetypeId?.includes("core")) return PLANET_STYLES.find((s) => s.id === "city")!;
-  if (sys.archetypeId?.includes("dead")) return PLANET_STYLES.find((s) => s.id === "ice")!;
 
   const rng = createRng(deriveSeed(sys.seed, "map_planet_style"));
   const table: PlanetStyleId[] = ["desert", "ice", "jungle", "ocean", "volcanic", "barren", "gas"];
@@ -214,27 +263,27 @@ function rebuildGalaxy() {
     systemsAtmos = null;
   }
 
-  const sectors = cache.sectorsInRadius(centerSector, radius);
-  const systems = sectors.flatMap((sector) =>
-    sector.systems.map((_, i) => cache.system(sector.coord, i))
-  );
+  // Use fixed 10 iconic Star Wars planets instead of proc-gen
+  const systems = PLANETS.map(planetToSystem);
 
   const scale = GALAXY_SCALE;
 
-  const planetGeo = new THREE.SphereGeometry(1, 22, 22);
-  const atmosGeo = new THREE.SphereGeometry(1.05, 18, 18);
+  const planetGeo = new THREE.SphereGeometry(1, 32, 32);
+  const atmosGeo = new THREE.SphereGeometry(1.12, 24, 24);
   const planetMat = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    roughness: 0.9,
-    metalness: 0.0
+    roughness: 0.65,
+    metalness: 0.05,
+    emissive: 0x111111,
+    emissiveIntensity: 0.3
   });
   planetMat.bumpMap = mapPlanetNoise;
-  planetMat.bumpScale = 0.55;
+  planetMat.bumpScale = 0.4;
   planetMat.roughnessMap = mapPlanetNoise;
   const atmosMat = new THREE.MeshBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.35,
+    opacity: 0.5,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     side: THREE.BackSide
@@ -322,11 +371,10 @@ function rebuildGalaxy() {
   hud.className = "hud-map";
   hud.innerText =
     `xwingz – galaxy map\n` +
-    `Seed: ${globalSeed.toString()}\n` +
     `Credits: ${credits} | Tier: ${missionTier}\n` +
-    `Center sector: [${centerSector.join(", ")}], radius ${radius}\n` +
-    `Systems: ${systems.length}\n` +
-    `WASD/Arrows move sector | Q/E Z-axis | +/- radius | click system | Enter to fly | 1 Yavin mission | U upgrades`;
+    `Planets: ${systems.length} iconic Star Wars locations\n` +
+    `Click planet to select | Enter to fly\n` +
+    `1 Yavin mission | 2/G Ground combat | U upgrades`;
 }
 
 // ---- Flight state ----
@@ -619,6 +667,7 @@ type FlightHudElements = {
   throttle: HTMLDivElement;
   shield: HTMLDivElement;
   hp: HTMLDivElement;
+  torpedo: HTMLDivElement;
   system: HTMLDivElement;
   faction: HTMLDivElement;
   credits: HTMLDivElement;
@@ -672,18 +721,18 @@ function createGlowTexture() {
 }
 
 const glowTex = createGlowTexture();
-const boltGeo = new THREE.CylinderGeometry(0.16, 0.16, 10, 6);
+const boltGeo = new THREE.CylinderGeometry(0.28, 0.28, 12, 6);
 const boltMatFriendly = new THREE.MeshBasicMaterial({
-  color: 0xff4444,
+  color: 0xff5555,
   transparent: true,
-  opacity: 0.95,
+  opacity: 1.0,
   blending: THREE.AdditiveBlending,
   depthWrite: false
 });
 const boltMatEnemy = new THREE.MeshBasicMaterial({
-  color: 0x55ff66,
+  color: 0x66ff77,
   transparent: true,
-  opacity: 0.95,
+  opacity: 1.0,
   blending: THREE.AdditiveBlending,
   depthWrite: false
 });
@@ -895,7 +944,7 @@ function buildYavinPlanet(seed: bigint) {
 function buildShipMesh() {
   const group = new THREE.Group();
 
-  const hullMat = new THREE.MeshStandardMaterial({ color: 0xc9d1e0, metalness: 0.35, roughness: 0.55 });
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0xe8f0ff, metalness: 0.25, roughness: 0.5 });
   const darkMat = new THREE.MeshStandardMaterial({ color: 0x171a25, metalness: 0.2, roughness: 0.85 });
   const redMat = new THREE.MeshStandardMaterial({ color: 0xb02a2a, roughness: 0.7 });
   const engineMat = new THREE.MeshStandardMaterial({ color: 0x9aa3b8, metalness: 0.35, roughness: 0.5 });
@@ -908,10 +957,10 @@ function buildShipMesh() {
     opacity: 0.6
   });
   const nozzleMat = new THREE.MeshStandardMaterial({
-    color: 0x1c7cff,
-    emissive: 0x2c9cff,
-    emissiveIntensity: 3.0,
-    roughness: 0.2
+    color: 0x44bbff,
+    emissive: 0x44ccff,
+    emissiveIntensity: 6.0,
+    roughness: 0.15
   });
 
   // Fuselage (reads as X-wing from silhouette, v0).
@@ -1295,7 +1344,7 @@ function resetExplosions() {
   explosions.length = 0;
 }
 
-function spawnExplosion(pos: THREE.Vector3, color = 0xffaa55, duration = 0.7, maxScale = 8) {
+function spawnExplosion(pos: THREE.Vector3, color = 0xffcc66, duration = 0.85, maxScale = 14) {
   const fx =
     explosionPool.pop() ??
     (() => {
@@ -1364,6 +1413,8 @@ function setupFlightHud() {
       <div id="hud-shield" class="hud-value">0</div>
       <div class="hud-label">HP</div>
       <div id="hud-hp" class="hud-value">0</div>
+      <div class="hud-label">TORP</div>
+      <div id="hud-torpedo" class="hud-value">0/0</div>
     </div>
     <div class="hud-right">
       <div class="hud-label">SYS</div>
@@ -1379,6 +1430,8 @@ function setupFlightHud() {
       <div class="hud-label">MAP: M</div>
       <div class="hud-label">BOOST: SHIFT</div>
       <div class="hud-label">BRAKE: X</div>
+      <div class="hud-label">TORP: C</div>
+      <div class="hud-label">SWITCH: V</div>
       <div class="hud-label">UPGRADES: U</div>
     </div>
   `;
@@ -1393,6 +1446,7 @@ function setupFlightHud() {
     throttle: q<HTMLDivElement>("#hud-throttle"),
     shield: q<HTMLDivElement>("#hud-shield"),
     hp: q<HTMLDivElement>("#hud-hp"),
+    torpedo: q<HTMLDivElement>("#hud-torpedo"),
     system: q<HTMLDivElement>("#hud-system"),
     faction: q<HTMLDivElement>("#hud-faction"),
     credits: q<HTMLDivElement>("#hud-credits"),
@@ -1517,10 +1571,10 @@ function startYavinDefense(system: SystemDef) {
   mission = null;
   yavin = {
     phase: "launch",
-    baseHpMax: 1200,
-    enemiesTotal: 10,
+    baseHpMax: 2000,
+    enemiesTotal: 6,
     enemiesKilled: 0,
-    rewardCredits: 1500,
+    rewardCredits: 1000,
     message: "RED SQUADRON: LAUNCH! DEFEND THE GREAT TEMPLE.",
     messageTimer: 6
   };
@@ -1579,12 +1633,14 @@ function startYavinDefense(system: SystemDef) {
     Ship.throttle[shipEid] = 0.35;
   }
 
-  // Wingmen (3) in loose formation.
+  // Wingmen (5) in loose formation - more backup for easier mission.
   spawnWingman(0, -22, 320);
   spawnWingman(1, 22, 320);
   spawnWingman(2, 0, 300);
+  spawnWingman(3, -40, 290);
+  spawnWingman(4, 40, 290);
 
-  // 10 TIE/LN raid incoming.
+  // 6 TIE/LN raid incoming (easier than 10).
   spawnYavinTieRaid(system.seed, yavin.enemiesTotal);
 
   yavin.phase = "combat";
@@ -1637,19 +1693,19 @@ function spawnWingman(slot: number, x: number, z: number) {
   LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
   LaserWeapon.damage[eid] = archetype.damage;
 
-  Health.hp[eid] = archetype.hp * 0.9;
-  Health.maxHp[eid] = archetype.hp * 0.9;
+  Health.hp[eid] = archetype.hp * 1.2;
+  Health.maxHp[eid] = archetype.hp * 1.2;
   HitRadius.r[eid] = archetype.hitRadius;
 
-  Shield.maxSp[eid] = 45;
-  Shield.sp[eid] = 45;
-  Shield.regenRate[eid] = 5;
+  Shield.maxSp[eid] = 60;
+  Shield.sp[eid] = 60;
+  Shield.regenRate[eid] = 7;
   Shield.lastHit[eid] = 999;
 
   FighterBrain.state[eid] = 0;
   FighterBrain.stateTime[eid] = 0;
-  FighterBrain.aggression[eid] = 0.7;
-  FighterBrain.evadeBias[eid] = 0.45;
+  FighterBrain.aggression[eid] = 0.85;
+  FighterBrain.evadeBias[eid] = 0.4;
   FighterBrain.targetEid[eid] = -1;
 
   const mesh = buildAllyMesh(slot);
@@ -1710,26 +1766,26 @@ function spawnYavinTieRaid(seed: bigint, count: number) {
     Ship.accel[eid] = archetype.accel;
     Ship.turnRate[eid] = archetype.turnRate;
 
-    LaserWeapon.cooldown[eid] = archetype.weaponCooldown;
+    LaserWeapon.cooldown[eid] = archetype.weaponCooldown * 1.3;
     LaserWeapon.cooldownRemaining[eid] = rng.range(0, archetype.weaponCooldown);
     LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
-    LaserWeapon.damage[eid] = archetype.damage;
+    LaserWeapon.damage[eid] = 5;
 
-    Health.hp[eid] = archetype.hp;
-    Health.maxHp[eid] = archetype.hp;
+    Health.hp[eid] = 50;
+    Health.maxHp[eid] = 50;
     HitRadius.r[eid] = archetype.hitRadius;
 
-    Shield.maxSp[eid] = 10;
-    Shield.sp[eid] = 10;
-    Shield.regenRate[eid] = 3;
+    Shield.maxSp[eid] = 8;
+    Shield.sp[eid] = 8;
+    Shield.regenRate[eid] = 2;
     Shield.lastHit[eid] = 999;
 
     FighterBrain.state[eid] = 0;
     FighterBrain.stateTime[eid] = 0;
-    FighterBrain.aggression[eid] = 0.8;
-    FighterBrain.evadeBias[eid] = 0.35;
-    // A subset of TIEs will prioritize the base.
-    FighterBrain.targetEid[eid] = baseTarget !== null && i < Math.ceil(count * 0.4) ? baseTarget : -1;
+    FighterBrain.aggression[eid] = 0.55;
+    FighterBrain.evadeBias[eid] = 0.45;
+    // Only 25% of TIEs prioritize the base (was 40%).
+    FighterBrain.targetEid[eid] = baseTarget !== null && i < Math.ceil(count * 0.25) ? baseTarget : -1;
 
     const mesh = buildEnemyMesh("tie_ln");
     mesh.position.set(x, y, z);
@@ -1773,12 +1829,240 @@ function enterMapMode() {
   }
 
   scene.clear();
-  scene.add(new THREE.AmbientLight(0xffffff, 0.35));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+  // Brighter lighting for map mode - planets need good illumination
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
   sun.position.set(350, 620, 280);
   scene.add(sun);
+  // Add fill light from opposite side for better planet visibility
+  const fillLight = new THREE.DirectionalLight(0x8888ff, 0.6);
+  fillLight.position.set(-300, -200, -400);
+  scene.add(fillLight);
+  // Add center point light for dramatic effect
+  const centerGlow = new THREE.PointLight(0xffffcc, 0.5, 800, 1.5);
+  centerGlow.position.set(0, 50, 0);
+  scene.add(centerGlow);
   camera.position.set(0, 200, 600);
   rebuildGalaxy();
+}
+
+function clearGroundScene() {
+  // Remove ground entities and meshes
+  if (playerSoldierEid !== null) {
+    removeEntity(game.world, playerSoldierEid);
+    playerSoldierEid = null;
+  }
+  if (groundPlayerMesh) {
+    scene.remove(groundPlayerMesh);
+    disposeObject(groundPlayerMesh);
+    groundPlayerMesh = null;
+  }
+  for (const eid of groundEnemyEids) {
+    removeEntity(game.world, eid);
+  }
+  groundEnemyEids = [];
+  for (const mesh of groundEnemyMeshes.values()) {
+    scene.remove(mesh);
+    disposeObject(mesh);
+  }
+  groundEnemyMeshes.clear();
+  for (const cpEid of groundCommandPostEids) {
+    removeEntity(game.world, cpEid);
+  }
+  groundCommandPostEids = [];
+
+  // Dispose input handler
+  if (groundInput) {
+    groundInput.dispose();
+    groundInput = null;
+  }
+
+  // Dispose physics world
+  if (physicsWorld) {
+    // Note: Full disposal would call disposePhysicsWorld but we keep it simple for now
+    physicsWorld = null;
+  }
+}
+
+function buildSoldierMesh(teamId: number): THREE.Object3D {
+  // Simple capsule placeholder for soldier
+  const group = new THREE.Group();
+  const bodyGeo = new THREE.CapsuleGeometry(0.35, 1.1, 8, 16);
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: teamId === 0 ? 0x44aa44 : 0xaa4444,
+    roughness: 0.7
+  });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = 0.9;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  // Head
+  const headGeo = new THREE.SphereGeometry(0.2, 12, 8);
+  const headMat = new THREE.MeshStandardMaterial({
+    color: teamId === 0 ? 0x88cc88 : 0xcc8888,
+    roughness: 0.6
+  });
+  const head = new THREE.Mesh(headGeo, headMat);
+  head.position.y = 1.65;
+  head.castShadow = true;
+  group.add(head);
+
+  return group;
+}
+
+function buildCommandPostMesh(ownerTeam: number): THREE.Object3D {
+  const group = new THREE.Group();
+
+  // Base platform
+  const baseGeo = new THREE.CylinderGeometry(3, 3.5, 0.4, 12);
+  const baseMat = new THREE.MeshStandardMaterial({
+    color: ownerTeam === -1 ? 0x666666 : ownerTeam === 0 ? 0x225522 : 0x552222,
+    roughness: 0.8
+  });
+  const base = new THREE.Mesh(baseGeo, baseMat);
+  base.position.y = 0.2;
+  base.receiveShadow = true;
+  group.add(base);
+
+  // Flag pole
+  const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 4, 8);
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.5 });
+  const pole = new THREE.Mesh(poleGeo, poleMat);
+  pole.position.y = 2.4;
+  pole.castShadow = true;
+  group.add(pole);
+
+  // Flag
+  const flagGeo = new THREE.PlaneGeometry(1.5, 1);
+  const flagMat = new THREE.MeshStandardMaterial({
+    color: ownerTeam === -1 ? 0xaaaaaa : ownerTeam === 0 ? 0x44ff44 : 0xff4444,
+    side: THREE.DoubleSide,
+    roughness: 0.9
+  });
+  const flag = new THREE.Mesh(flagGeo, flagMat);
+  flag.position.set(0.8, 3.9, 0);
+  flag.castShadow = true;
+  group.add(flag);
+
+  return group;
+}
+
+function enterGroundMode() {
+  if (upgradesOpen) closeUpgrades();
+  mode = "ground";
+  controls.enabled = false;
+  flightHud = null;
+  resetExplosions();
+  yavin = null;
+  clearAllies();
+  clearPlanetaryScene();
+  clearGroundScene();
+  camInit = false;
+
+  // Clear flight entities
+  clearProjectiles();
+  for (const eid of targetEids) {
+    removeEntity(game.world, eid);
+  }
+  targetEids = [];
+  for (const mesh of targetMeshes.values()) {
+    disposeObject(mesh);
+  }
+  targetMeshes.clear();
+
+  if (shipEid !== null) {
+    removeEntity(game.world, shipEid);
+    shipEid = null;
+  }
+  if (shipMesh) {
+    scene.remove(shipMesh);
+    disposeObject(shipMesh);
+    shipMesh = null;
+  }
+
+  // Setup scene
+  scene.clear();
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+  sun.position.set(100, 200, 50);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 500;
+  sun.shadow.camera.left = -100;
+  sun.shadow.camera.right = 100;
+  sun.shadow.camera.top = 100;
+  sun.shadow.camera.bottom = -100;
+  scene.add(sun);
+
+  // Ground plane (visual)
+  const groundGeo = new THREE.PlaneGeometry(200, 200);
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0x556644,
+    roughness: 0.95
+  });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Create physics world
+  physicsWorld = createPhysicsWorld({ x: 0, y: -9.81, z: 0 });
+  createGroundPlane(physicsWorld, 0, 100, 100);
+
+  // Create input handler
+  groundInput = createGroundInput(window);
+
+  // Spawn player soldier
+  playerSoldierEid = spawnSoldier(game.world, physicsWorld, 0, 1, 0, 0, 0, false);
+  groundPlayerMesh = buildSoldierMesh(0);
+  groundPlayerMesh.position.set(0, 0, 0);
+  scene.add(groundPlayerMesh);
+
+  // Spawn some command posts
+  const cpPositions = [
+    { x: 0, z: -30 },    // Neutral CP ahead
+    { x: 30, z: 0 },     // Friendly CP to right
+    { x: -30, z: 0 },    // Enemy CP to left
+  ];
+  for (let i = 0; i < cpPositions.length; i++) {
+    const pos = cpPositions[i];
+    const ownerTeam = i === 1 ? 0 : i === 2 ? 1 : -1;
+    const cpEid = spawnCommandPost(game.world, pos.x, 0, pos.z, ownerTeam, 10, 0.15);
+    groundCommandPostEids.push(cpEid);
+    const cpMesh = buildCommandPostMesh(ownerTeam);
+    cpMesh.position.set(pos.x, 0, pos.z);
+    cpMesh.userData.cpEid = cpEid;
+    scene.add(cpMesh);
+  }
+
+  // Spawn some enemy soldiers
+  const enemyPositions = [
+    { x: -25, z: -10 },
+    { x: -28, z: 5 },
+    { x: -20, z: 0 },
+  ];
+  for (const pos of enemyPositions) {
+    const enemyEid = spawnSoldier(game.world, physicsWorld, pos.x, 1, pos.z, 1, 0, true);
+    groundEnemyEids.push(enemyEid);
+    const enemyMesh = buildSoldierMesh(1);
+    enemyMesh.position.set(pos.x, 0, pos.z);
+    scene.add(enemyMesh);
+    groundEnemyMeshes.set(enemyEid, enemyMesh);
+  }
+
+  // Position camera for third-person view
+  camera.position.set(0, 5, 10);
+  camera.lookAt(0, 1, 0);
+
+  // Request pointer lock for mouse look
+  canvas.addEventListener("click", () => {
+    if (mode === "ground" && groundInput && !groundInput.isLocked()) {
+      groundInput.requestPointerLock();
+    }
+  }, { once: false });
 }
 
 function projectToScreen(pos: THREE.Vector3, out: ScreenPoint) {
@@ -1821,6 +2105,7 @@ function updateFlightHud(dtSeconds = 1 / 60) {
     els.throttle.textContent = "0%";
     els.shield.textContent = "0/0";
     els.hp.textContent = "0/0";
+    els.torpedo.textContent = "0/0";
     if (currentSystem) {
       els.system.textContent = currentSystem.id;
       els.faction.textContent = currentSystem.controllingFaction;
@@ -1861,6 +2146,18 @@ function updateFlightHud(dtSeconds = 1 / 60) {
   els.throttle.textContent = `${Math.round(t * 100)}%`;
   els.shield.textContent = `${sp.toFixed(0)}/${maxSp.toFixed(0)}`;
   els.hp.textContent = `${hpSelf.toFixed(0)}/${maxHpSelf.toFixed(0)}`;
+
+  // Torpedo status
+  const torpState = getTorpedoState(game.world);
+  if (torpState) {
+    const lockStr = torpState.lockProgress >= 1 ? "LOCKED" : torpState.lockProgress > 0 ? `${Math.round(torpState.lockProgress * 100)}%` : "";
+    els.torpedo.textContent = `${torpState.ammo}/${torpState.maxAmmo}${lockStr ? " " + lockStr : ""}`;
+    els.torpedo.style.color = torpState.lockProgress >= 1 ? "#ff4444" : "#88ff88";
+  } else {
+    els.torpedo.textContent = "0/0";
+    els.torpedo.style.color = "#88ff88";
+  }
+
   if (currentSystem) {
     els.system.textContent = currentSystem.id;
     els.faction.textContent = currentSystem.controllingFaction;
@@ -1959,8 +2256,8 @@ function updateFlightHud(dtSeconds = 1 / 60) {
     const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
     const inCone = screen.onScreen && angle < cone && dist < 900;
 
-    const lockGain = 0.9;
-    const lockDecay = 1.3;
+    const lockGain = 1.8;
+    const lockDecay = 0.6;
     lockValue += (inCone ? lockGain : -lockDecay) * dtSeconds;
     lockValue = Math.min(1, Math.max(0, lockValue));
 
@@ -2051,6 +2348,11 @@ window.addEventListener("keydown", (e) => {
     case "1":
       enterFlightMode(YAVIN_DEFENSE_SYSTEM, "yavin_defense");
       break;
+    case "2":
+    case "g":
+      // Enter ground combat test mode
+      enterGroundMode();
+      break;
     case "Enter":
       if (selectedSystem) enterFlightMode(selectedSystem);
       break;
@@ -2089,17 +2391,18 @@ window.addEventListener("click", (ev) => {
     const r = radii?.[idx] ?? 14;
     selectedMarker.scale.setScalar(r * 1.25);
   }
+  // Find the planet def for description
+  const planetDef = PLANETS.find(p => p.id === sys.id);
+  const planetName = planetDef?.name ?? sys.id;
+  const description = planetDef?.description ?? "";
+
   hud.innerText =
     `xwingz – galaxy map\n` +
-    `Seed: ${globalSeed.toString()}\n` +
     `Credits: ${credits} | Tier: ${missionTier}\n` +
-    `Center sector: [${centerSector.join(", ")}], radius ${radius}\n` +
-    `Systems: ${systems.length}\n\n` +
-    `Selected ${sys.id}\n` +
-    `Star: ${sys.starClass} | planets: ${sys.planetCount}\n` +
-    `Archetype: ${sys.archetypeId}\n` +
+    `Planets: 10 iconic Star Wars locations\n\n` +
+    `Selected: ${planetName.toUpperCase()}\n` +
+    `${description}\n` +
     `Faction: ${sys.controllingFaction}\n` +
-    `Economy: wealth ${sys.economy.wealth.toFixed(2)}, industry ${sys.economy.industry.toFixed(2)}, security ${sys.economy.security.toFixed(2)}\n` +
     `Mission: ${preview.title} — ${preview.goalKills} kills, reward ${preview.rewardCredits} CR\n` +
     `Press Enter to fly here`;
 });
@@ -2137,11 +2440,54 @@ try {
     get allyCount() {
       return allyEids.length;
     },
+    get planetCount() {
+      return PLANETS.length;
+    },
     get projectileCount() {
       return projectileMeshes.size;
     },
     get credits() {
       return credits;
+    },
+    get groundMode() {
+      if (mode !== "ground" || playerSoldierEid === null) return undefined;
+      const playerHp = hasComponent(game.world, Health, playerSoldierEid)
+        ? Health.hp[playerSoldierEid] ?? 0
+        : 0;
+      const playerAmmo = hasComponent(game.world, Soldier, playerSoldierEid)
+        ? Soldier.ammo[playerSoldierEid] ?? 0
+        : 0;
+      const isGrounded = hasComponent(game.world, CharacterController, playerSoldierEid)
+        ? CharacterController.grounded[playerSoldierEid] !== 0
+        : false;
+      const isPiloting = hasComponent(game.world, Piloting, playerSoldierEid)
+        ? (Piloting.vehicleEid[playerSoldierEid] ?? -1) >= 0
+        : false;
+
+      // Count command posts by owner
+      let friendlyPosts = 0;
+      let enemyPosts = 0;
+      let neutralPosts = 0;
+      for (const cpEid of groundCommandPostEids) {
+        if (hasComponent(game.world, CommandPost, cpEid)) {
+          const owner = CommandPost.ownerTeam[cpEid] ?? -1;
+          if (owner === 0) friendlyPosts++;
+          else if (owner === 1) enemyPosts++;
+          else neutralPosts++;
+        }
+      }
+
+      return {
+        playerEid: playerSoldierEid,
+        playerHealth: playerHp,
+        playerAmmo,
+        commandPostCount: groundCommandPostEids.length,
+        friendlyPosts,
+        enemyPosts,
+        neutralPosts,
+        isGrounded,
+        isPiloting
+      };
     }
   };
   if (e2eEnabled) {
@@ -2194,10 +2540,115 @@ game.setTick((dt) => {
     return;
   }
 
+  // Ground combat mode
+  if (mode === "ground") {
+    if (!physicsWorld || !groundInput || playerSoldierEid === null) {
+      renderer.render(scene, camera);
+      return;
+    }
+
+    // Update input
+    groundInput.update();
+
+    // Sync input to player entity
+    syncPlayerGroundInput(game.world, playerSoldierEid, groundInput.state);
+
+    // Run ground systems
+    groundMovementSystem(game.world, physicsWorld, dt);
+    vehicleInteractionSystem(game.world);
+    blasterSystem(game.world, physicsWorld, dt);
+    commandPostSystem(game.world, dt);
+    groundAISystem(game.world, dt);
+
+    // Step physics
+    stepPhysics(physicsWorld, dt);
+
+    // Handle ground impact events (for VFX)
+    const groundImpacts = consumeGroundImpactEvents();
+    for (const hit of groundImpacts) {
+      spawnExplosion(
+        tmpExplosionPos.set(hit.x, hit.y, hit.z),
+        hit.shooterTeam === 0 ? 0x77ff88 : 0xff6666,
+        hit.killed ? 0.4 : 0.12,
+        hit.killed ? 6 : 1.5
+      );
+    }
+
+    // Sync player mesh to entity position
+    if (groundPlayerMesh && hasComponent(game.world, Transform, playerSoldierEid)) {
+      groundPlayerMesh.position.set(
+        Transform.x[playerSoldierEid],
+        Transform.y[playerSoldierEid],
+        Transform.z[playerSoldierEid]
+      );
+      // Rotate mesh to face aim direction
+      const yaw = GroundInput.aimYaw[playerSoldierEid] ?? 0;
+      groundPlayerMesh.rotation.y = yaw;
+    }
+
+    // Sync enemy meshes
+    for (const [eid, mesh] of groundEnemyMeshes) {
+      if (hasComponent(game.world, Transform, eid) && hasComponent(game.world, Health, eid)) {
+        const hp = Health.hp[eid] ?? 0;
+        if (hp <= 0) {
+          // Enemy dead - remove
+          scene.remove(mesh);
+          disposeObject(mesh);
+          groundEnemyMeshes.delete(eid);
+          removeEntity(game.world, eid);
+          groundEnemyEids = groundEnemyEids.filter((e) => e !== eid);
+        } else {
+          mesh.position.set(Transform.x[eid], Transform.y[eid], Transform.z[eid]);
+          const enemyYaw = GroundInput.aimYaw[eid] ?? 0;
+          mesh.rotation.y = enemyYaw;
+        }
+      }
+    }
+
+    // Third-person camera follow
+    if (groundPlayerMesh) {
+      const yaw = groundInput.state.aimYaw;
+      const pitch = groundInput.state.aimPitch;
+      const camDist = 8;
+      const camHeight = 3;
+
+      const offsetX = Math.sin(yaw) * camDist * Math.cos(pitch);
+      const offsetZ = Math.cos(yaw) * camDist * Math.cos(pitch);
+      const offsetY = camHeight - Math.sin(pitch) * camDist * 0.5;
+
+      const targetPos = groundPlayerMesh.position;
+      const desiredCamPos = tmpCamOffset.set(
+        targetPos.x + offsetX,
+        targetPos.y + offsetY,
+        targetPos.z + offsetZ
+      );
+
+      const k = 1 - Math.exp(-dt * 12);
+      if (!camInit) {
+        camera.position.copy(desiredCamPos);
+        camInit = true;
+      } else {
+        camera.position.lerp(desiredCamPos, k);
+      }
+      camera.lookAt(targetPos.x, targetPos.y + 1.2, targetPos.z);
+    }
+
+    // Check for Escape to return to map
+    // (Using M key for now since Escape unlocks pointer)
+    if (groundInput.state.toggleMap) {
+      enterMapMode();
+      return;
+    }
+
+    updateExplosions(dt);
+    renderer.render(scene, camera);
+    return;
+  }
+
   // Flight mode
   input.update();
   {
-    const a = clamp(dt * 10, 0, 1);
+    const a = clamp(dt * 8, 0, 1);
     smPitch += (input.state.pitch - smPitch) * a;
     smYaw += (input.state.yaw - smYaw) * a;
     smRoll += (input.state.roll - smRoll) * a;
@@ -2265,6 +2716,11 @@ game.setTick((dt) => {
   weaponSystem(game.world, simInput, dt);
   aiWeaponSystem(game.world, dt);
   projectileSystem(game.world, dt);
+  // Torpedo systems
+  weaponSwitchSystem(game.world, simInput);
+  torpedoLockSystem(game.world, simInput, dt);
+  torpedoFireSystem(game.world, simInput, dt);
+  torpedoProjectileSystem(game.world, dt);
   shieldRegenSystem(game.world, dt);
 
   const impacts = consumeImpactEvents();
@@ -2345,7 +2801,7 @@ game.setTick((dt) => {
     const desiredPos = tmpLookAt.copy(pos).add(camOffset);
     const desiredLook = tmpExplosionPos.copy(pos).add(lookOffset);
 
-    const k = 1 - Math.exp(-dt * 8.5);
+    const k = 1 - Math.exp(-dt * 6.5);
     if (!camInit) {
       camSmoothPos.copy(desiredPos);
       camSmoothLook.copy(desiredLook);

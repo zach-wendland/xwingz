@@ -14,10 +14,13 @@
     "@xwingz/render": "file:../../packages/render",
     "@xwingz/procgen": "file:../../packages/procgen",
     "@xwingz/gameplay": "file:../../packages/gameplay",
+    "@xwingz/physics": "file:../../packages/physics",
     "three": "^0.161.0"
   },
   "devDependencies": {
     "typescript": "~5.9.3",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vite-plugin-wasm": "^3.5.0",
+    "vite-plugin-top-level-await": "^1.4.4"
   }
 }

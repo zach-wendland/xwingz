@@ -34,8 +34,8 @@ canvas {
   inset: 0;
   pointer-events: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: #7cff7c;
-  text-shadow: 0 0 6px rgba(124, 255, 124, 0.35);
+  color: #88ff88;
+  text-shadow: 0 0 10px rgba(136, 255, 136, 0.5), 0 0 20px rgba(136, 255, 136, 0.25);
 }
 
 .hidden {
@@ -130,8 +130,9 @@ canvas {
 }
 
 .hud-target {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
+  text-shadow: 0 0 8px currentColor;
 }
 
 .hud-lock {
@@ -226,8 +227,9 @@ canvas {
   margin-top: 6px;
 }
 .hud-value {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 700;
+  text-shadow: 0 0 12px currentColor;
 }
 
 .hud-bottom {

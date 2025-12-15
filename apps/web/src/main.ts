@@ -11,8 +11,9 @@ import { PLANETS } from "@xwingz/data";
 import { deriveSeed, type SystemDef } from "@xwingz/procgen";
 
 import { loadProfile, saveProfile, scheduleSave, type Profile } from "./state/ProfileManager";
-import { MapMode, FlightMode, GroundMode } from "./modes";
+import { MapMode, FlightMode, GroundMode, ConquestMode } from "./modes";
 import type { Mode, ModeHandler, ModeContext, ModeTransitionData } from "./modes";
+import { CONQUEST_FACTION, CONQUEST_PHASE } from "@xwingz/gameplay";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOM Setup
@@ -78,7 +79,8 @@ let currentMode: Mode = "map";
 const modeHandlers: Record<Mode, ModeHandler> = {
   map: new MapMode(),
   flight: new FlightMode(),
-  ground: new GroundMode()
+  ground: new GroundMode(),
+  conquest: new ConquestMode()
 };
 
 function requestModeChange(newMode: Mode, data?: ModeTransitionData): void {
@@ -149,6 +151,26 @@ try {
     get credits() { return profile.credits; },
     // Expose Yavin system for tests
     get yavinSystem() { return YAVIN_DEFENSE_SYSTEM; },
+    // Conquest mode state getters
+    get conquestState() {
+      const conquest = modeHandlers.conquest as ConquestMode;
+      if (currentMode !== "conquest" || !conquest.simulation) return null;
+      return conquest.simulation.getOverview();
+    },
+    get conquestPlanets() {
+      const conquest = modeHandlers.conquest as ConquestMode;
+      if (currentMode !== "conquest" || !conquest.simulation) return [];
+      return conquest.simulation.getPlanets();
+    },
+    get conquestFleets() {
+      const conquest = modeHandlers.conquest as ConquestMode;
+      if (currentMode !== "conquest" || !conquest.simulation) return [];
+      return conquest.simulation.getFleets();
+    },
+    get selectedPlanetIndex() {
+      const conquest = modeHandlers.conquest as ConquestMode;
+      return conquest.selectedPlanetIndex ?? -1;
+    },
     // Mode transition helpers for tests
     enterFlight(system: SystemDef, scenario: "sandbox" | "yavin_defense" = "sandbox") {
       requestModeChange("flight", { type: "flight", system, scenario });
@@ -158,13 +180,27 @@ try {
     },
     enterGround() {
       requestModeChange("ground", { type: "ground" });
-    }
+    },
+    enterConquest() {
+      requestModeChange("conquest", { type: "conquest" });
+    },
+    // Conquest test helpers
+    CONQUEST_FACTION,
+    CONQUEST_PHASE
   };
 
   if (e2eEnabled) {
     (window as any).__xwingzTest = {
       godMode(_on = true) {
         // Implementation moved to FlightMode - could add method there
+      },
+      killAllEnemies() {
+        const flight = modeHandlers.flight as FlightMode;
+        flight.killAllEnemiesForTest(game.world);
+      },
+      failBase() {
+        const flight = modeHandlers.flight as FlightMode;
+        flight.failBaseForTest(game.world);
       }
     };
   }

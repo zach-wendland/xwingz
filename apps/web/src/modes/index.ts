@@ -6,3 +6,4 @@ export * from "./types";
 export * from "./MapMode";
 export * from "./GroundMode";
 export * from "./FlightMode";
+export * from "./ConquestMode";

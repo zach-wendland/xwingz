@@ -60,7 +60,7 @@ export interface PreservedPlayerState {
  * Data passed during mode transitions
  */
 export type ModeTransitionData =
-  | { type: "flight"; system: SystemDef; scenario: "sandbox" | "yavin_defense" | "conquest" }
+  | { type: "flight"; system: SystemDef; scenario: FlightScenario }
   | { type: "ground" }
   | { type: "map" }
   | { type: "conquest" }
@@ -105,7 +105,7 @@ export interface ModeHandler {
 /**
  * Flight mode specific state (passed via data on transition)
  */
-export type FlightScenario = "sandbox" | "yavin_defense";
+export type FlightScenario = "sandbox" | "yavin_defense" | "conquest";
 
 export interface FlightModeData {
   type: "flight";

@@ -29,8 +29,7 @@ import type {
   ModeHandler,
   ModeContext,
   ModeTransitionData,
-  GroundFromFlightData,
-  PreservedPlayerState
+  GroundFromFlightData
 } from "./types";
 import { isGroundFromFlightTransition } from "./types";
 import { disposeObject } from "../rendering/MeshManager";

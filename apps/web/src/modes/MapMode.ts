@@ -349,7 +349,7 @@ export class MapMode implements ModeHandler {
         `Credits: ${ctx.profile.credits} | Tier: ${ctx.profile.missionTier}\n` +
         `Planets: 10 iconic Star Wars locations\n` +
         `Click planet to select | Enter to fly\n` +
-        `1 Yavin mission | 2/G Ground combat | U upgrades`;
+        `1 Yavin mission | 2/G Ground | 3/C Conquest | U upgrades`;
     } else {
       const preview = getMission(sys, ctx.profile.missionTier);
       const planetName = planetDef?.name ?? sys.id;
@@ -377,6 +377,10 @@ export class MapMode implements ModeHandler {
         case "2":
         case "g":
           ctx.requestModeChange("ground", { type: "ground" });
+          break;
+        case "3":
+        case "c":
+          ctx.requestModeChange("conquest", { type: "conquest" });
           break;
         case "Enter":
           if (this.selectedSystem) {

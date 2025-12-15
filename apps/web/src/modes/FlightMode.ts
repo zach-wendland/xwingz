@@ -1039,6 +1039,30 @@ export class FlightMode implements ModeHandler {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  // E2E Test Helpers (only for automated testing)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Kill all enemy targets - for e2e testing only
+   */
+  killAllEnemiesForTest(world: import("bitecs").IWorld): void {
+    for (const eid of this.targetEids) {
+      if (hasComponent(world, Health, eid)) {
+        Health.hp[eid] = 0;
+      }
+    }
+  }
+
+  /**
+   * Destroy the base - for e2e testing only
+   */
+  failBaseForTest(world: import("bitecs").IWorld): void {
+    if (this.baseEid !== null && hasComponent(world, Health, this.baseEid)) {
+      Health.hp[this.baseEid] = 0;
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Enemy/Ally Spawning
   // ───────────────────────────────────────────────────────────────────────────
 

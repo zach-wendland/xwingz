@@ -29,6 +29,7 @@ import {
   targetingSystem,
   weaponSystem,
   projectileSystem,
+  rebuildTargetSpatialHash,
   shieldRegenSystem,
   consumeImpactEvents,
   FighterBrain,
@@ -2715,6 +2716,8 @@ game.setTick((dt) => {
   spaceflightSystem(game.world, simInput, dt);
   weaponSystem(game.world, simInput, dt);
   aiWeaponSystem(game.world, dt);
+  // Rebuild spatial hash once per frame before collision systems
+  rebuildTargetSpatialHash(game.world);
   projectileSystem(game.world, dt);
   // Torpedo systems
   weaponSwitchSystem(game.world, simInput);

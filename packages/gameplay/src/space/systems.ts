@@ -21,6 +21,7 @@ import {
   WeaponLoadout
 } from "./components";
 import type { SpaceInputState } from "./input";
+import { SpatialHash } from "@xwingz/physics";
 
 export type ImpactEvent = {
   x: number;
@@ -117,6 +118,25 @@ const combatTargetQuery = defineQuery([Health, HitRadius, Transform]);
 const targetingQuery = defineQuery([Targeting, PlayerControlled, Transform, Team]);
 const aiQuery = defineQuery([AIControlled, FighterBrain, Ship, LaserWeapon, Transform, Velocity, AngularVelocity, Team]);
 const combatantQuery = defineQuery([Health, Transform, Team]);
+
+// Spatial hash for efficient collision queries (O(n) instead of O(n*m))
+// Cell size 100 balances distribution for typical engagement ranges
+const targetSpatialHash = new SpatialHash(100);
+
+/**
+ * Rebuild the spatial hash with current target positions.
+ * Call once per frame BEFORE projectileSystem/torpedoProjectileSystem.
+ */
+export function rebuildTargetSpatialHash(world: IWorld): void {
+  targetSpatialHash.clear();
+  const targets = combatTargetQuery(world);
+  for (const tid of targets) {
+    const x = Transform.x[tid] ?? 0;
+    const y = Transform.y[tid] ?? 0;
+    const z = Transform.z[tid] ?? 0;
+    targetSpatialHash.insert(tid, x, y, z);
+  }
+}
 
 const tmpQ = new Quaternion();
 const tmpEuler = new Euler();
@@ -378,7 +398,6 @@ export function aiWeaponSystem(world: IWorld, dt: number) {
 
 export function projectileSystem(world: IWorld, dt: number) {
   const ps = projectileQuery(world);
-  const targets = combatTargetQuery(world);
 
   for (const eid of ps) {
     const life0 = Projectile.life[eid] ?? 0;
@@ -393,7 +412,7 @@ export function projectileSystem(world: IWorld, dt: number) {
     Transform.y[eid] = (Transform.y[eid] ?? 0) + (Velocity.vy[eid] ?? 0) * dt;
     Transform.z[eid] = (Transform.z[eid] ?? 0) + (Velocity.vz[eid] ?? 0) * dt;
 
-    // Naive collision against targetables (small counts in v1).
+    // Spatial hash collision query - O(n) instead of O(n*m)
     const px = Transform.x[eid] ?? 0;
     const py = Transform.y[eid] ?? 0;
     const pz = Transform.z[eid] ?? 0;
@@ -403,11 +422,17 @@ export function projectileSystem(world: IWorld, dt: number) {
     const ownerTeam =
       owner >= 0 && hasComponent(world, Team, owner) ? (Team.id[owner] ?? -1) : -1;
 
-    for (const tid of targets) {
+    // Query radius: max hit radius (typically ~11-15) plus margin for movement
+    const nearbyTargets = targetSpatialHash.query(px, py, pz, 30);
+
+    for (const tid of nearbyTargets) {
       if (tid === owner) continue;
       if (ownerTeam !== -1 && hasComponent(world, Team, tid) && (Team.id[tid] ?? -2) === ownerTeam) {
         continue;
       }
+      // Verify entity still exists (could have been destroyed earlier this frame)
+      if (!hasComponent(world, Health, tid)) continue;
+
       const dx = (Transform.x[tid] ?? 0) - px;
       const dy = (Transform.y[tid] ?? 0) - py;
       const dz = (Transform.z[tid] ?? 0) - pz;
@@ -966,7 +991,6 @@ function fireTorpedo(world: IWorld, shooterEid: number, targetEid: number): void
  */
 export function torpedoProjectileSystem(world: IWorld, dt: number): void {
   const torpedoes = torpedoProjectileQuery(world);
-  const targets = combatTargetQuery(world);
 
   for (const eid of torpedoes) {
     const life = (TorpedoProjectile.life[eid] ?? 0) - dt;
@@ -1034,7 +1058,7 @@ export function torpedoProjectileSystem(world: IWorld, dt: number): void {
     Transform.y[eid] = py + vy * dt;
     Transform.z[eid] = pz + vz * dt;
 
-    // Collision detection
+    // Spatial hash collision query - O(n) instead of O(n*m)
     const owner = TorpedoProjectile.owner[eid] ?? -1;
     const dmg = TorpedoProjectile.damage[eid] ?? 150;
     const ownerTeam = owner >= 0 && hasComponent(world, Team, owner) ? (Team.id[owner] ?? -1) : -1;
@@ -1043,11 +1067,16 @@ export function torpedoProjectileSystem(world: IWorld, dt: number): void {
     const newPy = Transform.y[eid] ?? 0;
     const newPz = Transform.z[eid] ?? 0;
 
-    for (const tid of targets) {
+    // Torpedo has larger hit radius (+5), so query radius 35
+    const nearbyTargets = targetSpatialHash.query(newPx, newPy, newPz, 35);
+
+    for (const tid of nearbyTargets) {
       if (tid === owner) continue;
       if (ownerTeam !== -1 && hasComponent(world, Team, tid) && (Team.id[tid] ?? -2) === ownerTeam) {
         continue;
       }
+      // Verify entity still exists
+      if (!hasComponent(world, Health, tid)) continue;
 
       const dx = (Transform.x[tid] ?? 0) - newPx;
       const dy = (Transform.y[tid] ?? 0) - newPy;

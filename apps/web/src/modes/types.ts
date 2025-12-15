@@ -105,7 +105,7 @@ export interface ModeHandler {
 /**
  * Flight mode specific state (passed via data on transition)
  */
-export type FlightScenario = "sandbox" | "yavin_defense" | "conquest";
+export type FlightScenario = "sandbox" | "yavin_defense" | "conquest" | "destroy_star_destroyer";
 
 export interface FlightModeData {
   type: "flight";

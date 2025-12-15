@@ -138,6 +138,14 @@ try {
       const flight = modeHandlers.flight as FlightMode;
       return flight.yavinPhase;
     },
+    get starDestroyerPhase() {
+      const flight = modeHandlers.flight as FlightMode;
+      return flight.starDestroyerPhase;
+    },
+    get capitalShipCount() {
+      const flight = modeHandlers.flight as FlightMode;
+      return flight.capitalShipCount;
+    },
     get targetCount() {
       const flight = modeHandlers.flight as FlightMode;
       return flight.targetCount;
@@ -175,7 +183,7 @@ try {
       return conquest.selectedPlanetIndex ?? -1;
     },
     // Mode transition helpers for tests
-    enterFlight(system: SystemDef, scenario: "sandbox" | "yavin_defense" = "sandbox") {
+    enterFlight(system: SystemDef, scenario: "sandbox" | "yavin_defense" | "destroy_star_destroyer" = "sandbox") {
       requestModeChange("flight", { type: "flight", system, scenario });
     },
     enterMap() {
@@ -204,6 +212,10 @@ try {
       failBase() {
         const flight = modeHandlers.flight as FlightMode;
         flight.failBaseForTest(game.world);
+      },
+      destroyStarDestroyer() {
+        const flight = modeHandlers.flight as FlightMode;
+        flight.destroyStarDestroyerForTest(game.world);
       }
     };
   }

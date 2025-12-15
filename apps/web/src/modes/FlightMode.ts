@@ -4,7 +4,7 @@
  */
 
 import * as THREE from "three";
-import { addComponent, addEntity, removeEntity, hasComponent } from "bitecs";
+import { addComponent, addEntity, removeEntity, hasComponent, defineQuery } from "bitecs";
 import {
   createRng,
   deriveSeed,
@@ -50,8 +50,41 @@ import {
   torpedoFireSystem,
   torpedoProjectileSystem,
   weaponSwitchSystem,
-  getTorpedoState
+  getTorpedoState,
+  // Capital ship imports
+  CapitalShipV2,
+  Turret,
+  Subsystem,
+  capitalShipMovementSystem,
+  capitalShipShieldSystem,
+  turretTargetingSystem,
+  turretRotationSystem,
+  turretFireSystem,
+  turretProjectileSystem,
+  subsystemEffectsSystem,
+  parentChildTransformSystem,
+  spawnCapitalShipV2,
+  removeCapitalShipV2,
+  consumeTurretFireEvents,
+  consumeSubsystemDestroyedEvents,
+  rebuildFighterSpatialHash
 } from "@xwingz/gameplay";
+
+// Local copies of const enums (can't import const enums with verbatimModuleSyntax)
+const SubsystemType = {
+  Bridge: 0,
+  ShieldGen: 1,
+  Engines: 2,
+  Targeting: 3,
+  Power: 4,
+  Hangar: 5
+} as const;
+const TurretType = {
+  PointDefense: 0,
+  Medium: 1,
+  Heavy: 2,
+  Ion: 3
+} as const;
 import type { ModeHandler, ModeContext, ModeTransitionData, FlightScenario } from "./types";
 import { isFlightTransition } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
@@ -83,6 +116,14 @@ type FlightHudElements = {
   bracket: HTMLDivElement;
   lead: HTMLDivElement;
   landPrompt: HTMLDivElement;
+  // Capital ship HUD
+  capitalPanel: HTMLDivElement;
+  capShieldFront: HTMLDivElement;
+  capShieldRear: HTMLDivElement;
+  capHullFore: HTMLDivElement;
+  capHullMid: HTMLDivElement;
+  capHullAft: HTMLDivElement;
+  capSubsystems: HTMLDivElement;
 };
 
 type TerrainParams = {
@@ -109,6 +150,21 @@ type YavinDefenseState = {
   baseHpMax: number;
   enemiesTotal: number;
   enemiesKilled: number;
+  rewardCredits: number;
+  message: string;
+  messageTimer: number;
+};
+
+type StarDestroyerMissionPhase = "approach" | "shields" | "subsystems" | "final" | "success" | "fail";
+
+type StarDestroyerMissionState = {
+  phase: StarDestroyerMissionPhase;
+  starDestroyerEid: number;
+  tieFighterCount: number;
+  tieFightersKilled: number;
+  subsystemsDestroyed: number;
+  totalSubsystems: number;
+  shieldsDown: boolean;
   rewardCredits: number;
   message: string;
   messageTimer: number;
@@ -165,6 +221,13 @@ export class FlightMode implements ModeHandler {
   private projectileMeshes = new Map<number, THREE.Mesh>();
   private boltForward = new THREE.Vector3(0, 0, 1);
 
+  // Capital ships
+  private capitalShipEids: number[] = [];
+  private capitalShipMeshes = new Map<number, THREE.Object3D>();
+  private turretMeshes = new Map<number, THREE.Object3D>();
+  private subsystemMeshes = new Map<number, THREE.Object3D>();
+  private turretProjectileMeshes = new Map<number, THREE.Mesh>();
+
   // Targeting / lock
   private lockValue = 0;
   private lockTargetEid = -1;
@@ -172,6 +235,7 @@ export class FlightMode implements ModeHandler {
   // Mission state
   private mission: MissionRuntime | null = null;
   private yavin: YavinDefenseState | null = null;
+  private starDestroyerMission: StarDestroyerMissionState | null = null;
 
   // Input
   private input: ReturnType<typeof createSpaceInput> | null = null;
@@ -280,6 +344,8 @@ export class FlightMode implements ModeHandler {
     // Build scene based on scenario
     if (this.scenario === "yavin_defense" && this.currentSystem) {
       this.buildYavinPlanet(ctx, this.currentSystem.seed);
+    } else if (this.scenario === "destroy_star_destroyer" && this.currentSystem) {
+      this.buildLocalStarfield(ctx, this.currentSystem.seed);
     } else if (this.currentSystem) {
       this.buildLocalStarfield(ctx, this.currentSystem.seed);
     }
@@ -290,6 +356,8 @@ export class FlightMode implements ModeHandler {
     // Start mission/scenario
     if (this.scenario === "yavin_defense" && this.currentSystem) {
       this.startYavinDefense(ctx, this.currentSystem);
+    } else if (this.scenario === "destroy_star_destroyer" && this.currentSystem) {
+      this.startStarDestroyerMission(ctx, this.currentSystem);
     } else if (this.currentSystem) {
       this.startMission(ctx, this.currentSystem);
     }
@@ -393,10 +461,35 @@ export class FlightMode implements ModeHandler {
       this.yavin.messageTimer = 2;
     }
 
+    // Handle Star Destroyer restart
+    if (
+      this.scenario === "destroy_star_destroyer" &&
+      this.currentSystem &&
+      this.starDestroyerMission &&
+      (this.starDestroyerMission.phase === "success" || this.starDestroyerMission.phase === "fail") &&
+      this.simInput.hyperspace
+    ) {
+      ctx.requestModeChange("flight", {
+        type: "flight",
+        system: this.currentSystem,
+        scenario: "destroy_star_destroyer"
+      });
+      return;
+    }
+
+    // Block hyperspace in Star Destroyer mission
+    if (this.scenario === "destroy_star_destroyer" && this.starDestroyerMission &&
+        this.starDestroyerMission.phase !== "success" && this.starDestroyerMission.phase !== "fail" &&
+        this.simInput.hyperspace) {
+      this.starDestroyerMission.message = "HYPERSPACE DISABLED - DESTROY THE STAR DESTROYER";
+      this.starDestroyerMission.messageTimer = 2;
+    }
+
     // Handle player death
     if (this.playerDead) {
       this.respawnTimer += dt;
-      if (this.scenario !== "yavin_defense" && this.respawnTimer >= this.RESPAWN_DELAY && this.currentSystem) {
+      if (this.scenario !== "yavin_defense" && this.scenario !== "destroy_star_destroyer" &&
+          this.respawnTimer >= this.RESPAWN_DELAY && this.currentSystem) {
         this.clearProjectiles(ctx);
         this.respawnPlayer(ctx);
         this.startMission(ctx, this.currentSystem);
@@ -416,12 +509,25 @@ export class FlightMode implements ModeHandler {
     weaponSystem(ctx.world, this.simInput, dt);
     aiWeaponSystem(ctx.world, dt);
     rebuildTargetSpatialHash(ctx.world);
+    rebuildFighterSpatialHash(ctx.world); // For capital ship turret targeting
     projectileSystem(ctx.world, dt);
     weaponSwitchSystem(ctx.world, this.simInput);
     torpedoLockSystem(ctx.world, this.simInput, dt);
     torpedoFireSystem(ctx.world, this.simInput, dt);
     torpedoProjectileSystem(ctx.world, dt);
     shieldRegenSystem(ctx.world, dt);
+
+    // Capital ship systems
+    if (this.capitalShipEids.length > 0) {
+      capitalShipMovementSystem(ctx.world, dt);
+      capitalShipShieldSystem(ctx.world, dt);
+      parentChildTransformSystem(ctx.world);
+      turretTargetingSystem(ctx.world, dt);
+      turretRotationSystem(ctx.world, dt);
+      turretFireSystem(ctx.world, dt);
+      turretProjectileSystem(ctx.world, dt);
+      subsystemEffectsSystem(ctx.world, dt);
+    }
 
     // Handle impacts
     const impacts = consumeImpactEvents();
@@ -462,6 +568,11 @@ export class FlightMode implements ModeHandler {
       }
     }
 
+    // Update Star Destroyer mission
+    if (this.scenario === "destroy_star_destroyer" && this.starDestroyerMission) {
+      this.updateStarDestroyerMission(ctx, dt);
+    }
+
     // Check player death
     const player = getPlayerShip(ctx.world);
     if (player === null) {
@@ -469,6 +580,13 @@ export class FlightMode implements ModeHandler {
         this.yavin.phase = "fail";
         this.yavin.message = "MISSION FAILED - YOU WERE SHOT DOWN";
         this.yavin.messageTimer = 8;
+        ctx.scheduleSave();
+      }
+      if (this.scenario === "destroy_star_destroyer" && this.starDestroyerMission &&
+          this.starDestroyerMission.phase !== "success" && this.starDestroyerMission.phase !== "fail") {
+        this.starDestroyerMission.phase = "fail";
+        this.starDestroyerMission.message = "MISSION FAILED - YOU WERE SHOT DOWN";
+        this.starDestroyerMission.messageTimer = 8;
         ctx.scheduleSave();
       }
       this.playerDead = true;
@@ -548,8 +666,14 @@ export class FlightMode implements ModeHandler {
 
     this.syncProjectiles(ctx);
 
-    // Hyperspace jump (sandbox)
-    if (this.scenario !== "yavin_defense" && this.simInput.hyperspace) {
+    // Capital ship sync
+    if (this.capitalShipEids.length > 0) {
+      this.syncCapitalShips(ctx);
+      this.syncTurretProjectiles(ctx);
+    }
+
+    // Hyperspace jump (sandbox only)
+    if (this.scenario !== "yavin_defense" && this.scenario !== "destroy_star_destroyer" && this.simInput.hyperspace) {
       this.hyperspaceJump(ctx);
     }
 
@@ -559,6 +683,9 @@ export class FlightMode implements ModeHandler {
     }
     if (this.yavin && this.yavin.messageTimer > 0) {
       this.yavin.messageTimer = Math.max(0, this.yavin.messageTimer - dt);
+    }
+    if (this.starDestroyerMission && this.starDestroyerMission.messageTimer > 0) {
+      this.starDestroyerMission.messageTimer = Math.max(0, this.starDestroyerMission.messageTimer - dt);
     }
 
     this.updateFlightHud(ctx, dt);
@@ -613,9 +740,13 @@ export class FlightMode implements ModeHandler {
     // Reset HUD
     this.flightHud = null;
 
+    // Clear capital ships
+    this.clearCapitalShips(ctx);
+
     // Reset state
     this.yavin = null;
     this.mission = null;
+    this.starDestroyerMission = null;
     this.camInit = false;
     this.input = null;
   }
@@ -963,6 +1094,249 @@ export class FlightMode implements ModeHandler {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Capital Ship Meshes
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Build procedural Imperial Star Destroyer mesh.
+   * Scale: ~80 units length (1600m / 20 scale factor)
+   */
+  private buildStarDestroyerMesh(): THREE.Group {
+    const group = new THREE.Group();
+
+    // Materials
+    const hullMat = new THREE.MeshStandardMaterial({
+      color: 0x8a8f9d,
+      metalness: 0.3,
+      roughness: 0.7
+    });
+    const darkMat = new THREE.MeshStandardMaterial({
+      color: 0x2a2d36,
+      metalness: 0.2,
+      roughness: 0.8
+    });
+    const bridgeMat = new THREE.MeshStandardMaterial({
+      color: 0x3a3f4c,
+      metalness: 0.35,
+      roughness: 0.6
+    });
+    const windowMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xffffcc,
+      emissiveIntensity: 0.8
+    });
+    const engineMat = new THREE.MeshStandardMaterial({
+      color: 0x4488ff,
+      emissive: 0x4488ff,
+      emissiveIntensity: 2.0
+    });
+
+    // Main wedge hull (elongated pyramid/wedge shape)
+    // Using BufferGeometry for custom wedge
+    const hullGeo = new THREE.BufferGeometry();
+    const hw = 30;  // half width at back
+    const hh = 8;   // half height
+    const len = 80; // length
+
+    // Wedge vertices (front point, back rectangle)
+    const vertices = new Float32Array([
+      // Front point (nose)
+      0, 0, -len / 2,
+      // Back top-left
+      -hw, hh, len / 2,
+      // Back top-right
+      hw, hh, len / 2,
+      // Back bottom-left
+      -hw, -hh / 2, len / 2,
+      // Back bottom-right
+      hw, -hh / 2, len / 2,
+    ]);
+
+    const indices = new Uint16Array([
+      // Top face
+      0, 1, 2,
+      // Bottom face
+      0, 4, 3,
+      // Left face
+      0, 3, 1,
+      // Right face
+      0, 2, 4,
+      // Back face
+      1, 3, 4, 1, 4, 2
+    ]);
+
+    hullGeo.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+    hullGeo.setIndex(new THREE.BufferAttribute(indices, 1));
+    hullGeo.computeVertexNormals();
+
+    const mainHull = new THREE.Mesh(hullGeo, hullMat);
+    mainHull.castShadow = true;
+    group.add(mainHull);
+
+    // Bridge tower (iconic superstructure)
+    const bridgeBase = new THREE.Mesh(
+      new THREE.BoxGeometry(12, 12, 8),
+      bridgeMat
+    );
+    bridgeBase.position.set(0, 12, 20);
+    bridgeBase.castShadow = true;
+    group.add(bridgeBase);
+
+    const bridgeTop = new THREE.Mesh(
+      new THREE.BoxGeometry(8, 6, 6),
+      bridgeMat
+    );
+    bridgeTop.position.set(0, 20, 20);
+    bridgeTop.castShadow = true;
+    group.add(bridgeTop);
+
+    // Shield generator domes (on bridge)
+    const domeGeo = new THREE.SphereGeometry(2, 8, 8);
+    const leftDome = new THREE.Mesh(domeGeo, darkMat);
+    leftDome.position.set(-5, 24, 20);
+    leftDome.castShadow = true;
+    group.add(leftDome);
+
+    const rightDome = new THREE.Mesh(domeGeo, darkMat);
+    rightDome.position.set(5, 24, 20);
+    rightDome.castShadow = true;
+    group.add(rightDome);
+
+    // Engine array (3 main engines at back)
+    const engineGeo = new THREE.CylinderGeometry(3, 3.5, 6, 8);
+    const glowGeo = new THREE.CircleGeometry(2.8, 12);
+
+    for (let i = -1; i <= 1; i++) {
+      const engine = new THREE.Mesh(engineGeo, darkMat);
+      engine.rotation.x = Math.PI / 2;
+      engine.position.set(i * 10, 0, len / 2 + 3);
+      engine.castShadow = true;
+      group.add(engine);
+
+      const glow = new THREE.Mesh(glowGeo, engineMat);
+      glow.position.set(i * 10, 0, len / 2 + 6);
+      group.add(glow);
+    }
+
+    // Surface greebles (trench detail lines)
+    const trenchGeo = new THREE.BoxGeometry(0.5, 0.3, 40);
+    for (let i = -3; i <= 3; i++) {
+      if (i === 0) continue;
+      const trench = new THREE.Mesh(trenchGeo, darkMat);
+      trench.position.set(i * 6, hh + 0.15, 0);
+      group.add(trench);
+    }
+
+    // Window lights along the hull
+    const windowGeo = new THREE.BoxGeometry(0.3, 0.15, 0.15);
+    for (let z = -30; z <= 30; z += 5) {
+      for (let x = -20; x <= 20; x += 8) {
+        // Calculate Y based on wedge shape
+        const t = (z + len / 2) / len;
+        const maxX = hw * t;
+        if (Math.abs(x) > maxX - 2) continue;
+        const y = hh * t + 0.2;
+
+        const win = new THREE.Mesh(windowGeo, windowMat);
+        win.position.set(x, y, z);
+        group.add(win);
+      }
+    }
+
+    return group;
+  }
+
+  /**
+   * Build a turret mesh for capital ships.
+   */
+  private buildTurretMesh(turretType: number): THREE.Group {
+    const group = new THREE.Group();
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x4a4f5c,
+      metalness: 0.4,
+      roughness: 0.6
+    });
+    const barrelMat = new THREE.MeshStandardMaterial({
+      color: 0x2a2d36,
+      metalness: 0.5,
+      roughness: 0.5
+    });
+
+    // Scale based on turret type
+    const scale = turretType === TurretType.Heavy ? 1.5 :
+                  turretType === TurretType.Medium ? 1.0 : 0.6;
+
+    // Turret base
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.5 * scale, 2 * scale, 1 * scale, 8),
+      baseMat
+    );
+    base.castShadow = true;
+    group.add(base);
+
+    // Barrel(s)
+    const barrelGeo = new THREE.CylinderGeometry(0.2 * scale, 0.2 * scale, 4 * scale, 6);
+    const barrelCount = turretType === TurretType.PointDefense ? 2 :
+                        turretType === TurretType.Medium ? 2 : 1;
+
+    for (let i = 0; i < barrelCount; i++) {
+      const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set((i - (barrelCount - 1) / 2) * 0.8 * scale, 0.5 * scale, -2 * scale);
+      barrel.castShadow = true;
+      group.add(barrel);
+    }
+
+    return group;
+  }
+
+  /**
+   * Build subsystem indicator mesh (glowing target point).
+   */
+  private buildSubsystemMesh(type: number): THREE.Group {
+    const group = new THREE.Group();
+
+    const colors: Record<number, number> = {
+      [SubsystemType.Bridge]: 0xff3344,
+      [SubsystemType.ShieldGen]: 0x44aaff,
+      [SubsystemType.Engines]: 0xff8833,
+      [SubsystemType.Targeting]: 0xffff44,
+      [SubsystemType.Power]: 0x44ff44,
+      [SubsystemType.Hangar]: 0xaa44ff
+    };
+
+    const color = colors[type] ?? 0xffffff;
+
+    // Glowing indicator sphere
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(1.5, 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: color,
+        emissive: color,
+        emissiveIntensity: 1.5,
+        transparent: true,
+        opacity: 0.7
+      })
+    );
+    group.add(sphere);
+
+    // Rotating ring
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(2.5, 0.15, 8, 16),
+      new THREE.MeshStandardMaterial({
+        color: color,
+        emissive: color,
+        emissiveIntensity: 0.8
+      })
+    );
+    ring.rotation.x = Math.PI / 2;
+    group.add(ring);
+
+    return group;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Player Spawning
   // ───────────────────────────────────────────────────────────────────────────
 
@@ -1038,6 +1412,14 @@ export class FlightMode implements ModeHandler {
     return this.yavin?.phase ?? null;
   }
 
+  get starDestroyerPhase(): string | null {
+    return this.starDestroyerMission?.phase ?? null;
+  }
+
+  get capitalShipCount(): number {
+    return this.capitalShipEids.length;
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   // E2E Test Helpers (only for automated testing)
   // ───────────────────────────────────────────────────────────────────────────
@@ -1050,9 +1432,15 @@ export class FlightMode implements ModeHandler {
     for (const eid of this.targetEids) {
       removeEntity(world, eid);
     }
+    // Clear the targetEids array to trigger phase transitions
+    this.targetEids = [];
     // Update yavin kill count if in yavin mission
     if (this.yavin && this.yavin.phase === "combat") {
       this.yavin.enemiesKilled = this.yavin.enemiesTotal;
+    }
+    // Update SD mission kill count
+    if (this.starDestroyerMission) {
+      this.starDestroyerMission.tieFightersKilled = this.starDestroyerMission.tieFighterCount;
     }
   }
 
@@ -1062,6 +1450,23 @@ export class FlightMode implements ModeHandler {
   failBaseForTest(world: import("bitecs").IWorld): void {
     if (this.baseEid !== null && hasComponent(world, Health, this.baseEid)) {
       Health.hp[this.baseEid] = 0;
+    }
+  }
+
+  /**
+   * Destroy the Star Destroyer - for e2e testing only
+   */
+  destroyStarDestroyerForTest(world: import("bitecs").IWorld): void {
+    if (this.starDestroyerMission && this.capitalShipEids.length > 0) {
+      const sdEid = this.starDestroyerMission.starDestroyerEid;
+      if (hasComponent(world, CapitalShipV2, sdEid)) {
+        // Set all hull sections to 0 to trigger destruction
+        CapitalShipV2.hullFore[sdEid] = 0;
+        CapitalShipV2.hullMid[sdEid] = 0;
+        CapitalShipV2.hullAft[sdEid] = 0;
+        // Remove the entity to trigger cleanup
+        removeCapitalShipV2(world, sdEid);
+      }
     }
   }
 
@@ -1415,6 +1820,231 @@ export class FlightMode implements ModeHandler {
     ctx.scheduleSave();
   }
 
+  /**
+   * Start the "Destroy Star Destroyer" mission.
+   * Phase 1: Approach - Clear TIE fighter screen
+   * Phase 2: Shields - Destroy shield generators
+   * Phase 3: Subsystems - Target bridge/engines
+   * Phase 4: Final - Hull damage, victory when destroyed
+   */
+  private startStarDestroyerMission(ctx: ModeContext, system: SystemDef): void {
+    this.mission = null;
+    this.yavin = null;
+    this.clearCapitalShips(ctx);
+
+    // Clear existing enemies
+    for (const eid of this.targetEids) removeEntity(ctx.world, eid);
+    this.targetEids = [];
+    for (const mesh of this.targetMeshes.values()) {
+      ctx.scene.remove(mesh);
+      disposeObject(mesh);
+    }
+    this.targetMeshes.clear();
+
+    // Spawn the Star Destroyer at a distance (team 1 = enemy)
+    const sdResult = this.spawnStarDestroyer(ctx, 0, 0, -1000, 1);
+
+    // Initialize mission state
+    this.starDestroyerMission = {
+      phase: "approach",
+      starDestroyerEid: sdResult.shipEid,
+      tieFighterCount: 8,
+      tieFightersKilled: 0,
+      subsystemsDestroyed: 0,
+      totalSubsystems: sdResult.subsystemEids.length,
+      shieldsDown: false,
+      rewardCredits: 2500,
+      message: "APPROACH THE STAR DESTROYER. CLEAR THE TIE FIGHTER SCREEN.",
+      messageTimer: 6
+    };
+
+    // Spawn TIE fighter escort
+    this.spawnStarDestroyerEscort(ctx, system.seed, this.starDestroyerMission.tieFighterCount);
+
+    // Position player
+    if (this.shipEid !== null) {
+      Transform.x[this.shipEid] = 0;
+      Transform.y[this.shipEid] = 0;
+      Transform.z[this.shipEid] = 200;
+      Transform.qx[this.shipEid] = 0;
+      Transform.qy[this.shipEid] = 0;
+      Transform.qz[this.shipEid] = 0;
+      Transform.qw[this.shipEid] = 1;
+      Velocity.vx[this.shipEid] = 0;
+      Velocity.vy[this.shipEid] = 0;
+      Velocity.vz[this.shipEid] = 0;
+      Ship.throttle[this.shipEid] = 0.5;
+    }
+
+    ctx.scheduleSave();
+  }
+
+  /**
+   * Spawn TIE fighter escort for the Star Destroyer mission.
+   */
+  private spawnStarDestroyerEscort(ctx: ModeContext, seed: bigint, count: number): void {
+    const rng = createRng(deriveSeed(seed, "sd_escort", "ties_v0"));
+
+    for (let i = 0; i < count; i++) {
+      const archetype = getFighterArchetype("tie_ln");
+      const angle = (i / count) * Math.PI * 2;
+      const radius = 150 + rng.range(0, 100);
+      const x = Math.cos(angle) * radius;
+      const z = -800 + Math.sin(angle) * radius;
+      const y = rng.range(-40, 40);
+
+      const eid = addEntity(ctx.world);
+      addComponent(ctx.world, Transform, eid);
+      addComponent(ctx.world, Velocity, eid);
+      addComponent(ctx.world, AngularVelocity, eid);
+      addComponent(ctx.world, Team, eid);
+      addComponent(ctx.world, Ship, eid);
+      addComponent(ctx.world, LaserWeapon, eid);
+      addComponent(ctx.world, Targetable, eid);
+      addComponent(ctx.world, Health, eid);
+      addComponent(ctx.world, HitRadius, eid);
+      addComponent(ctx.world, Shield, eid);
+      addComponent(ctx.world, FighterBrain, eid);
+      addComponent(ctx.world, AIControlled, eid);
+
+      Transform.x[eid] = x;
+      Transform.y[eid] = y;
+      Transform.z[eid] = z;
+      // Face toward player
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI, 0));
+      Transform.qx[eid] = q.x;
+      Transform.qy[eid] = q.y;
+      Transform.qz[eid] = q.z;
+      Transform.qw[eid] = q.w;
+
+      Velocity.vx[eid] = 0;
+      Velocity.vy[eid] = 0;
+      Velocity.vz[eid] = 0;
+
+      AngularVelocity.wx[eid] = 0;
+      AngularVelocity.wy[eid] = 0;
+      AngularVelocity.wz[eid] = 0;
+
+      Team.id[eid] = 1; // Enemy team
+
+      Ship.maxSpeed[eid] = archetype.maxSpeed;
+      Ship.throttle[eid] = 0.8;
+      Ship.accel[eid] = archetype.accel;
+      Ship.turnRate[eid] = archetype.turnRate;
+
+      LaserWeapon.cooldown[eid] = archetype.weaponCooldown;
+      LaserWeapon.cooldownRemaining[eid] = rng.range(0, archetype.weaponCooldown);
+      LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
+      LaserWeapon.damage[eid] = archetype.damage;
+
+      Health.hp[eid] = archetype.hp;
+      Health.maxHp[eid] = archetype.hp;
+      HitRadius.r[eid] = archetype.hitRadius;
+
+      Shield.maxSp[eid] = 0; // TIEs have no shields
+      Shield.sp[eid] = 0;
+      Shield.regenRate[eid] = 0;
+      Shield.lastHit[eid] = 999;
+
+      FighterBrain.state[eid] = 0;
+      FighterBrain.stateTime[eid] = 0;
+      FighterBrain.aggression[eid] = 0.9;
+      FighterBrain.evadeBias[eid] = 0.3;
+      FighterBrain.targetEid[eid] = this.shipEid ?? -1;
+
+      this.targetEids.push(eid);
+
+      // Create mesh
+      const mesh = this.buildEnemyMesh("tie_ln");
+      mesh.position.set(x, y, z);
+      ctx.scene.add(mesh);
+      this.targetMeshes.set(eid, mesh);
+    }
+
+    rebuildFighterSpatialHash(ctx.world);
+  }
+
+  /**
+   * Update Star Destroyer mission phases during tick.
+   */
+  private updateStarDestroyerMission(ctx: ModeContext, dt: number): void {
+    const m = this.starDestroyerMission;
+    if (!m) return;
+
+    // Update message timer
+    if (m.messageTimer > 0) m.messageTimer -= dt;
+
+    // Check if Star Destroyer is destroyed
+    const sdAlive = hasComponent(ctx.world, CapitalShipV2, m.starDestroyerEid);
+    if (!sdAlive && m.phase !== "success" && m.phase !== "fail") {
+      m.phase = "success";
+      m.message = "STAR DESTROYER DESTROYED! MISSION COMPLETE!";
+      m.messageTimer = 8;
+      ctx.profile.credits += m.rewardCredits;
+      ctx.scheduleSave();
+      return;
+    }
+
+    // Count alive TIEs
+    const aliveTies = this.targetEids.filter(eid =>
+      hasComponent(ctx.world, Ship, eid) &&
+      hasComponent(ctx.world, Health, eid) &&
+      (Health.hp[eid] ?? 0) > 0
+    ).length;
+
+    // Count destroyed subsystems
+    const subsystemQuery = defineQuery([Subsystem]);
+    const subsystems = subsystemQuery(ctx.world).filter((eid: number) => Subsystem.parentEid[eid] === m.starDestroyerEid);
+    const destroyedSubsystems = subsystems.filter((eid: number) => Subsystem.disabled[eid] === 1).length;
+    m.subsystemsDestroyed = destroyedSubsystems;
+
+    // Check shields status
+    const shieldGens = subsystems.filter((eid: number) =>
+      Subsystem.subsystemType[eid] === SubsystemType.ShieldGen && Subsystem.disabled[eid] === 1
+    );
+    const totalShieldGens = subsystems.filter((eid: number) => Subsystem.subsystemType[eid] === SubsystemType.ShieldGen).length;
+    m.shieldsDown = shieldGens.length >= 2 || (shieldGens.length >= 1 && totalShieldGens === 1);
+
+    // Phase transitions
+    switch (m.phase) {
+      case "approach":
+        // Transition to shields phase when TIEs cleared
+        if (aliveTies === 0) {
+          m.phase = "shields";
+          m.message = "TIE SCREEN CLEARED! TARGET THE SHIELD GENERATORS!";
+          m.messageTimer = 5;
+        }
+        break;
+
+      case "shields":
+        // Transition to subsystems when shields down
+        if (m.shieldsDown) {
+          m.phase = "subsystems";
+          m.message = "SHIELDS DOWN! TARGET THE BRIDGE OR ENGINES!";
+          m.messageTimer = 5;
+        }
+        break;
+
+      case "subsystems":
+        // Transition to final when key subsystems destroyed
+        if (destroyedSubsystems >= 3) {
+          m.phase = "final";
+          m.message = "SUBSYSTEMS CRITICAL! ATTACK THE HULL!";
+          m.messageTimer = 5;
+        }
+        break;
+
+      case "final":
+        // Victory handled above when SD destroyed
+        break;
+
+      case "success":
+      case "fail":
+        // Terminal states
+        break;
+    }
+  }
+
   private hyperspaceJump(ctx: ModeContext): void {
     if (!this.currentSystem || !this.cache) return;
 
@@ -1589,6 +2219,222 @@ export class FlightMode implements ModeHandler {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Capital Ship Spawning & Sync
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Spawn an enemy Star Destroyer at the given position.
+   * Turrets and subsystems are auto-generated based on ShipClass.Destroyer.
+   */
+  spawnStarDestroyer(
+    ctx: ModeContext,
+    x: number,
+    y: number,
+    z: number,
+    team: number
+  ): { shipEid: number; turretEids: number[]; subsystemEids: number[] } {
+    const result = spawnCapitalShipV2(ctx.world, {
+      shipClass: 3, // ShipClass.Destroyer
+      team,
+      x,
+      y,
+      z
+    });
+
+    // Create mesh
+    const mesh = this.buildStarDestroyerMesh();
+    mesh.position.set(x, y, z);
+    ctx.scene.add(mesh);
+    this.capitalShipMeshes.set(result.shipEid, mesh);
+    this.capitalShipEids.push(result.shipEid);
+
+    // Create turret meshes
+    for (const tid of result.turretEids) {
+      const turretType = Turret.turretType[tid] ?? 0;
+      const turretMesh = this.buildTurretMesh(turretType);
+      turretMesh.position.set(
+        Transform.x[tid] ?? 0,
+        Transform.y[tid] ?? 0,
+        Transform.z[tid] ?? 0
+      );
+      ctx.scene.add(turretMesh);
+      this.turretMeshes.set(tid, turretMesh);
+    }
+
+    // Create subsystem indicator meshes
+    for (const sid of result.subsystemEids) {
+      const type = Subsystem.subsystemType[sid] ?? 0;
+      const subMesh = this.buildSubsystemMesh(type);
+      subMesh.position.set(
+        Transform.x[sid] ?? 0,
+        Transform.y[sid] ?? 0,
+        Transform.z[sid] ?? 0
+      );
+      ctx.scene.add(subMesh);
+      this.subsystemMeshes.set(sid, subMesh);
+    }
+
+    return result;
+  }
+
+  /**
+   * Sync capital ship, turret, and subsystem mesh positions.
+   */
+  private syncCapitalShips(ctx: ModeContext): void {
+    // Sync capital ship hulls
+    for (let i = this.capitalShipEids.length - 1; i >= 0; i--) {
+      const eid = this.capitalShipEids[i]!;
+
+      // Check if destroyed
+      if (!hasComponent(ctx.world, CapitalShipV2, eid)) {
+        const mesh = this.capitalShipMeshes.get(eid);
+        if (mesh) {
+          // Big explosion for capital ship destruction
+          this.explosions?.spawn(
+            this.tmpExplosionPos.copy(mesh.position),
+            0xff8844,
+            2.0,
+            30
+          );
+          ctx.scene.remove(mesh);
+          disposeObject(mesh);
+          this.capitalShipMeshes.delete(eid);
+        }
+        this.capitalShipEids.splice(i, 1);
+        continue;
+      }
+
+      const mesh = this.capitalShipMeshes.get(eid);
+      if (mesh) {
+        mesh.position.set(
+          Transform.x[eid] ?? 0,
+          Transform.y[eid] ?? 0,
+          Transform.z[eid] ?? 0
+        );
+        mesh.quaternion.set(
+          Transform.qx[eid] ?? 0,
+          Transform.qy[eid] ?? 0,
+          Transform.qz[eid] ?? 0,
+          Transform.qw[eid] ?? 1
+        );
+      }
+    }
+
+    // Sync turrets
+    for (const [tid, mesh] of this.turretMeshes) {
+      if (!hasComponent(ctx.world, Turret, tid)) {
+        ctx.scene.remove(mesh);
+        disposeObject(mesh);
+        this.turretMeshes.delete(tid);
+        continue;
+      }
+
+      mesh.position.set(
+        Transform.x[tid] ?? 0,
+        Transform.y[tid] ?? 0,
+        Transform.z[tid] ?? 0
+      );
+      // Turret rotation (combine parent rotation with local yaw/pitch)
+      const yaw = Turret.yaw[tid] ?? 0;
+      const pitch = Turret.pitch[tid] ?? 0;
+      mesh.rotation.set(pitch, yaw, 0, "YXZ");
+    }
+
+    // Sync subsystems
+    for (const [sid, mesh] of this.subsystemMeshes) {
+      if (!hasComponent(ctx.world, Subsystem, sid)) {
+        ctx.scene.remove(mesh);
+        disposeObject(mesh);
+        this.subsystemMeshes.delete(sid);
+        continue;
+      }
+
+      mesh.position.set(
+        Transform.x[sid] ?? 0,
+        Transform.y[sid] ?? 0,
+        Transform.z[sid] ?? 0
+      );
+
+      // Rotate the indicator ring
+      const ring = mesh.children[1];
+      if (ring) {
+        ring.rotation.z += 0.02;
+      }
+
+      // Hide disabled subsystems
+      const disabled = Subsystem.disabled[sid] === 1;
+      mesh.visible = !disabled;
+    }
+  }
+
+  /**
+   * Sync turret projectile meshes.
+   */
+  private syncTurretProjectiles(_ctx: ModeContext): void {
+    // Consume fire events and spawn projectile meshes
+    const fireEvents = consumeTurretFireEvents();
+    for (const evt of fireEvents) {
+      // Muzzle flash effect
+      this.explosions?.spawn(
+        this.tmpExplosionPos.set(evt.x, evt.y, evt.z),
+        evt.team === 0 ? 0xff6666 : 0x44ff44,
+        0.08,
+        1.5
+      );
+    }
+
+    // Consume subsystem destroyed events
+    const destroyedEvents = consumeSubsystemDestroyedEvents();
+    for (const evt of destroyedEvents) {
+      this.explosions?.spawn(
+        this.tmpExplosionPos.set(evt.x, evt.y, evt.z),
+        0xff8844,
+        0.6,
+        8
+      );
+    }
+
+    // Sync turret projectile meshes from TurretProjectile query
+    // (Similar to syncProjectiles but for capital ship weapons)
+    // For now, we rely on the turretProjectileSystem to handle collision
+    // and the fire events for visual feedback
+  }
+
+  /**
+   * Clear all capital ship meshes.
+   */
+  clearCapitalShips(ctx: ModeContext): void {
+    for (const eid of this.capitalShipEids) {
+      removeCapitalShipV2(ctx.world, eid);
+    }
+    this.capitalShipEids = [];
+
+    for (const mesh of this.capitalShipMeshes.values()) {
+      ctx.scene.remove(mesh);
+      disposeObject(mesh);
+    }
+    this.capitalShipMeshes.clear();
+
+    for (const mesh of this.turretMeshes.values()) {
+      ctx.scene.remove(mesh);
+      disposeObject(mesh);
+    }
+    this.turretMeshes.clear();
+
+    for (const mesh of this.subsystemMeshes.values()) {
+      ctx.scene.remove(mesh);
+      disposeObject(mesh);
+    }
+    this.subsystemMeshes.clear();
+
+    for (const mesh of this.turretProjectileMeshes.values()) {
+      ctx.scene.remove(mesh);
+      disposeObject(mesh);
+    }
+    this.turretProjectileMeshes.clear();
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   // HUD
   // ───────────────────────────────────────────────────────────────────────────
 
@@ -1637,6 +2483,34 @@ export class FlightMode implements ModeHandler {
         <div class="hud-label">SWITCH: V</div>
         <div class="hud-label">UPGRADES: U</div>
       </div>
+      <div id="hud-capital" class="hud-capital-panel hidden">
+        <div class="hud-capital-title">IMPERIAL STAR DESTROYER</div>
+        <div class="hud-shield-arc">
+          <div class="hud-shield-section">
+            <div class="hud-shield-label">FRONT SHIELD</div>
+            <div class="hud-shield-bar"><div id="hud-cap-shield-front" class="hud-shield-fill" style="width:100%"></div></div>
+          </div>
+          <div class="hud-shield-section">
+            <div class="hud-shield-label">REAR SHIELD</div>
+            <div class="hud-shield-bar"><div id="hud-cap-shield-rear" class="hud-shield-fill" style="width:100%"></div></div>
+          </div>
+        </div>
+        <div class="hud-capital-hull">
+          <div class="hud-hull-section">
+            <div class="hud-hull-label">FORE</div>
+            <div class="hud-hull-bar"><div id="hud-cap-hull-fore" class="hud-hull-fill" style="width:100%"></div></div>
+          </div>
+          <div class="hud-hull-section">
+            <div class="hud-hull-label">MID</div>
+            <div class="hud-hull-bar"><div id="hud-cap-hull-mid" class="hud-hull-fill" style="width:100%"></div></div>
+          </div>
+          <div class="hud-hull-section">
+            <div class="hud-hull-label">AFT</div>
+            <div class="hud-hull-bar"><div id="hud-cap-hull-aft" class="hud-hull-fill" style="width:100%"></div></div>
+          </div>
+        </div>
+        <div id="hud-cap-subsystems" class="hud-subsystem-list"></div>
+      </div>
     `;
 
     const q = <T extends HTMLElement>(sel: string): T => {
@@ -1659,7 +2533,15 @@ export class FlightMode implements ModeHandler {
       mission: q<HTMLDivElement>("#hud-mission"),
       bracket: q<HTMLDivElement>("#hud-bracket"),
       lead: q<HTMLDivElement>("#hud-lead"),
-      landPrompt: q<HTMLDivElement>("#hud-land-prompt")
+      landPrompt: q<HTMLDivElement>("#hud-land-prompt"),
+      // Capital ship HUD
+      capitalPanel: q<HTMLDivElement>("#hud-capital"),
+      capShieldFront: q<HTMLDivElement>("#hud-cap-shield-front"),
+      capShieldRear: q<HTMLDivElement>("#hud-cap-shield-rear"),
+      capHullFore: q<HTMLDivElement>("#hud-cap-hull-fore"),
+      capHullMid: q<HTMLDivElement>("#hud-cap-hull-mid"),
+      capHullAft: q<HTMLDivElement>("#hud-cap-hull-aft"),
+      capSubsystems: q<HTMLDivElement>("#hud-cap-subsystems")
     };
   }
 
@@ -1694,12 +2576,23 @@ export class FlightMode implements ModeHandler {
         } else {
           els.mission.textContent = `DEFEND GREAT TEMPLE: ${yavinState.enemiesKilled}/${yavinState.enemiesTotal}  BASE ${Math.max(0, baseHp).toFixed(0)}/${yavinState.baseHpMax}`;
         }
+      } else if (this.starDestroyerMission) {
+        const sdm = this.starDestroyerMission;
+        if (sdm.messageTimer > 0) {
+          els.mission.textContent = sdm.message;
+        } else if (sdm.phase === "success") {
+          els.mission.textContent = "VICTORY - PRESS M FOR MAP OR H TO RESTART";
+        } else if (sdm.phase === "fail") {
+          els.mission.textContent = "MISSION FAILED - PRESS H TO RESTART";
+        } else {
+          els.mission.textContent = `DESTROY STAR DESTROYER: PHASE ${sdm.phase.toUpperCase()}`;
+        }
       } else {
         els.mission.textContent = this.mission ? this.mission.def.title : "";
       }
       els.target.textContent = this.playerDead ? "SHIP DESTROYED" : "NO TARGET";
       els.lock.textContent =
-        this.playerDead && yavinState
+        this.playerDead && (yavinState || this.starDestroyerMission)
           ? "PRESS H TO RESTART"
           : this.playerDead
             ? "RESPAWNING..."
@@ -1757,6 +2650,20 @@ export class FlightMode implements ModeHandler {
       } else {
         els.mission.textContent = `DEFEND GREAT TEMPLE: ${yavinState.enemiesKilled}/${yavinState.enemiesTotal}  BASE ${Math.max(0, baseHp).toFixed(0)}/${yavinState.baseHpMax}`;
       }
+    } else if (this.starDestroyerMission) {
+      const sdm = this.starDestroyerMission;
+      if (sdm.messageTimer > 0) {
+        els.mission.textContent = sdm.message;
+      } else if (sdm.phase === "success") {
+        els.mission.textContent = "VICTORY - PRESS M FOR MAP OR H TO RESTART";
+      } else if (sdm.phase === "fail") {
+        els.mission.textContent = "MISSION FAILED - PRESS H TO RESTART";
+      } else {
+        const phaseText = sdm.phase === "approach" ? "CLEAR TIES" :
+                         sdm.phase === "shields" ? "DESTROY SHIELDS" :
+                         sdm.phase === "subsystems" ? "TARGET SUBSYSTEMS" : "ATTACK HULL";
+        els.mission.textContent = `DESTROY STAR DESTROYER: ${phaseText}  ${sdm.subsystemsDestroyed}/${sdm.totalSubsystems} SYSTEMS`;
+      }
     } else if (this.mission) {
       if (this.mission.messageTimer > 0) {
         els.mission.textContent = this.mission.message;
@@ -1790,6 +2697,96 @@ export class FlightMode implements ModeHandler {
 
     // Landing prompt visibility
     els.landPrompt.classList.toggle("hidden", !this.canLand);
+
+    // Capital ship HUD update
+    this.updateCapitalShipHud(ctx);
+  }
+
+  private updateCapitalShipHud(ctx: ModeContext): void {
+    const els = this.flightHud;
+    if (!els) return;
+
+    // Hide if no capital ships
+    if (this.capitalShipEids.length === 0) {
+      els.capitalPanel.classList.add("hidden");
+      return;
+    }
+
+    // Get the first capital ship (could enhance to target-specific later)
+    const shipEid = this.capitalShipEids[0]!;
+    if (!hasComponent(ctx.world, CapitalShipV2, shipEid)) {
+      els.capitalPanel.classList.add("hidden");
+      return;
+    }
+
+    els.capitalPanel.classList.remove("hidden");
+
+    // Shield bars
+    const shieldFront = CapitalShipV2.shieldFront[shipEid] ?? 0;
+    const shieldRear = CapitalShipV2.shieldRear[shipEid] ?? 0;
+    const shieldMax = CapitalShipV2.shieldMax[shipEid] ?? 1;
+    els.capShieldFront.style.width = `${(shieldFront / shieldMax) * 100}%`;
+    els.capShieldRear.style.width = `${(shieldRear / shieldMax) * 100}%`;
+
+    // Hull section bars
+    const hullFore = CapitalShipV2.hullFore[shipEid] ?? 0;
+    const hullMid = CapitalShipV2.hullMid[shipEid] ?? 0;
+    const hullAft = CapitalShipV2.hullAft[shipEid] ?? 0;
+    const hullForeMax = CapitalShipV2.hullForeMax[shipEid] ?? 1;
+    const hullMidMax = CapitalShipV2.hullMidMax[shipEid] ?? 1;
+    const hullAftMax = CapitalShipV2.hullAftMax[shipEid] ?? 1;
+
+    const setHullBarClass = (el: HTMLDivElement, current: number, max: number) => {
+      const pct = current / max;
+      el.style.width = `${pct * 100}%`;
+      el.className = "hud-hull-fill" + (pct < 0.25 ? " critical" : pct < 0.5 ? " damaged" : "");
+    };
+
+    setHullBarClass(els.capHullFore, hullFore, hullForeMax);
+    setHullBarClass(els.capHullMid, hullMid, hullMidMax);
+    setHullBarClass(els.capHullAft, hullAft, hullAftMax);
+
+    // Update subsystems list
+    const subsystemNames: Record<number, string> = {
+      0: "BRIDGE",
+      1: "SHIELD GEN",
+      2: "ENGINES",
+      3: "TARGETING",
+      4: "POWER",
+      5: "HANGAR"
+    };
+    const subsystemIcons: Record<number, string> = {
+      0: "bridge",
+      1: "shield",
+      2: "engine",
+      3: "targeting",
+      4: "power",
+      5: "hangar"
+    };
+
+    // Build subsystem list HTML
+    let subsystemHtml = "";
+    for (const [sid] of this.subsystemMeshes) {
+      if (!hasComponent(ctx.world, Subsystem, sid)) continue;
+      if ((Subsystem.parentEid[sid] ?? -1) !== shipEid) continue;
+
+      const type = Subsystem.subsystemType[sid] ?? 0;
+      const hp = Subsystem.hp[sid] ?? 0;
+      const maxHp = Subsystem.maxHp[sid] ?? 1;
+      const disabled = Subsystem.disabled[sid] === 1;
+      const name = subsystemNames[type] ?? "UNKNOWN";
+      const iconClass = subsystemIcons[type] ?? "power";
+      const pct = Math.max(0, Math.round((hp / maxHp) * 100));
+
+      subsystemHtml += `
+        <div class="hud-subsystem${disabled ? " destroyed" : ""}">
+          <div class="hud-subsystem-icon ${iconClass}"></div>
+          <span>${name}</span>
+          <span class="hud-subsystem-hp">${disabled ? "DISABLED" : pct + "%"}</span>
+        </div>
+      `;
+    }
+    els.capSubsystems.innerHTML = subsystemHtml;
   }
 
   private updateTargetBracket(ctx: ModeContext, teid: number, dtSeconds: number): void {

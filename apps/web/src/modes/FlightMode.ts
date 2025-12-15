@@ -1044,12 +1044,15 @@ export class FlightMode implements ModeHandler {
 
   /**
    * Kill all enemy targets - for e2e testing only
+   * Removes entities to trigger death detection in syncTargets
    */
   killAllEnemiesForTest(world: import("bitecs").IWorld): void {
     for (const eid of this.targetEids) {
-      if (hasComponent(world, Health, eid)) {
-        Health.hp[eid] = 0;
-      }
+      removeEntity(world, eid);
+    }
+    // Update yavin kill count if in yavin mission
+    if (this.yavin && this.yavin.phase === "combat") {
+      this.yavin.enemiesKilled = this.yavin.enemiesTotal;
     }
   }
 

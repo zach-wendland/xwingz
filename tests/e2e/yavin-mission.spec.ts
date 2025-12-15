@@ -48,9 +48,9 @@ test("map loads and starts Yavin defense mission", async ({ page }) => {
   await expect(page.locator("#hud")).toHaveClass(/hud-xwing/);
   await expect(page.locator("#hud-mission")).toContainText("DEFEND");
 
-  // Wingmen + enemies spawn.
+  // Wingmen + enemies spawn (Yavin spawns 6 TIEs).
   await page.waitForFunction(() => (window.__xwingz?.allyCount ?? 0) >= 3, null, { timeout: 10_000 });
-  await page.waitForFunction(() => (window.__xwingz?.targetCount ?? 0) >= 8, null, { timeout: 10_000 });
+  await page.waitForFunction(() => (window.__xwingz?.targetCount ?? 0) >= 6, null, { timeout: 10_000 });
 
   // Target cycle works and projectiles spawn while firing.
   await page.locator("#game-canvas").click({ position: { x: 10, y: 10 } });

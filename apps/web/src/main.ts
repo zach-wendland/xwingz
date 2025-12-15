@@ -84,14 +84,17 @@ const modeHandlers: Record<Mode, ModeHandler> = {
 };
 
 function requestModeChange(newMode: Mode, data?: ModeTransitionData): void {
-  if (newMode === currentMode) return;
+  // Allow same-mode re-entry when data is provided (for restarts)
+  const isSameMode = newMode === currentMode;
 
   // Exit current mode
   modeHandlers[currentMode].exit(modeContext);
 
-  // Enter new mode
+  // Enter new mode (or re-enter same mode for restart)
   currentMode = newMode;
   modeHandlers[currentMode].enter(modeContext, data);
+
+  void isSameMode; // Used for restart logic
 }
 
 // Create mode context

@@ -104,3 +104,17 @@ export function createSaveScheduler(profile: Profile): { schedule: () => void; f
 
   return { schedule, flush };
 }
+
+// Global save handle for simple scheduleSave usage
+let globalSaveHandle: number | null = null;
+
+/**
+ * Simple debounced save - schedules a save after 500ms
+ */
+export function scheduleSave(profile: Profile): void {
+  if (globalSaveHandle !== null) return;
+  globalSaveHandle = window.setTimeout(() => {
+    globalSaveHandle = null;
+    saveProfile(profile);
+  }, 500);
+}

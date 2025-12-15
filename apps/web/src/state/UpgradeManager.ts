@@ -55,11 +55,12 @@ export type PlayerStats = {
   maxSpeed: number;
   accel: number;
   turnRate: number;
-  maxShield: number;
-  shieldRegen: number;
+  maxSp: number;
+  regen: number;
   maxHp: number;
   damage: number;
   weaponCooldown: number;
+  projectileSpeed: number;
 };
 
 /**
@@ -77,10 +78,11 @@ export function computePlayerStats(upgrades: Upgrades): PlayerStats {
     maxSpeed: base.maxSpeed * (1 + engineLvl * 0.06),
     accel: base.accel * (1 + engineLvl * 0.08),
     turnRate: base.turnRate * (1 + maneuverLvl * 0.08),
-    maxShield: 60 + shieldLvl * 14,
-    shieldRegen: 6 + shieldLvl * 0.8,
+    maxSp: 60 + shieldLvl * 14,
+    regen: 6 + shieldLvl * 0.8,
     maxHp: base.hp + hullLvl * 16,
     damage: base.damage * (1 + laserLvl * 0.08),
-    weaponCooldown: Math.max(0.06, base.weaponCooldown * (1 - laserLvl * 0.03))
+    weaponCooldown: Math.max(0.06, base.weaponCooldown * (1 - laserLvl * 0.03)),
+    projectileSpeed: base.projectileSpeed
   };
 }

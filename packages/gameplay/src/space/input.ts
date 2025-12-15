@@ -11,6 +11,7 @@ export type SpaceInputState = {
   cycleTarget: boolean;
   hyperspace: boolean;
   toggleMap: boolean;
+  land: boolean;           // L to land on planet surface
 };
 
 export function createSpaceInput(target: Window = window) {
@@ -19,6 +20,7 @@ export function createSpaceInput(target: Window = window) {
   let hyperspace = false;
   let toggleMap = false;
   let switchWeapon = false;
+  let land = false;
 
   function onKeyDown(e: KeyboardEvent) {
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -27,6 +29,7 @@ export function createSpaceInput(target: Window = window) {
     if (e.key.toLowerCase() === "h") hyperspace = true;
     if (e.key.toLowerCase() === "m") toggleMap = true;
     if (e.key.toLowerCase() === "v") switchWeapon = true;  // V to switch weapons
+    if (e.key.toLowerCase() === "l") land = true;          // L to land
   }
   function onKeyUp(e: KeyboardEvent) {
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -53,7 +56,8 @@ export function createSpaceInput(target: Window = window) {
     switchWeapon: false,
     cycleTarget: false,
     hyperspace: false,
-    toggleMap: false
+    toggleMap: false,
+    land: false
   };
 
   function update() {
@@ -69,11 +73,13 @@ export function createSpaceInput(target: Window = window) {
     state.cycleTarget = cycleTarget;
     state.hyperspace = hyperspace;
     state.toggleMap = toggleMap;
+    state.land = land;
 
     switchWeapon = false;
     cycleTarget = false;
     hyperspace = false;
     toggleMap = false;
+    land = false;
   }
 
   function dispose() {

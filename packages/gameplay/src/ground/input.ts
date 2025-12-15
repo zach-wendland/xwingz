@@ -15,6 +15,7 @@ export type GroundInputState = {
   toggleMap: boolean;  // M key (one-shot, exit to map)
   dodge: boolean;      // Alt key (one-shot, dodge roll)
   throwGrenade: boolean; // G key (one-shot, throw grenade)
+  launch: boolean;     // L key (one-shot, launch back to space)
 };
 
 const PITCH_MIN = -Math.PI * 0.44; // ~-80 degrees
@@ -28,6 +29,7 @@ export function createGroundInput(target: HTMLElement | Window = window) {
   let toggleMapPressed = false;
   let dodgePressed = false;
   let grenadePressed = false;
+  let launchPressed = false;
   let mouseDeltaX = 0;
   let mouseDeltaY = 0;
   let isPointerLocked = false;
@@ -44,7 +46,8 @@ export function createGroundInput(target: HTMLElement | Window = window) {
     aimPitch: 0,
     toggleMap: false,
     dodge: false,
-    throwGrenade: false
+    throwGrenade: false,
+    launch: false
   };
 
   function onKeyDown(e: KeyboardEvent) {
@@ -56,6 +59,7 @@ export function createGroundInput(target: HTMLElement | Window = window) {
     if (key === "m") toggleMapPressed = true;
     if (key === "Alt" || key === "AltLeft" || key === "AltRight") dodgePressed = true;
     if (key === "g") grenadePressed = true;
+    if (key === "l") launchPressed = true;
   }
 
   function onKeyUp(e: KeyboardEvent) {
@@ -111,11 +115,13 @@ export function createGroundInput(target: HTMLElement | Window = window) {
     state.toggleMap = toggleMapPressed;
     state.dodge = dodgePressed;
     state.throwGrenade = grenadePressed;
+    state.launch = launchPressed;
     jumpPressed = false;
     interactPressed = false;
     toggleMapPressed = false;
     dodgePressed = false;
     grenadePressed = false;
+    launchPressed = false;
 
     // Fire
     state.firePrimary = keys.has(" ") || keys.has("Space");

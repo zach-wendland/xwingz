@@ -82,6 +82,7 @@ type FlightHudElements = {
   mission: HTMLDivElement;
   bracket: HTMLDivElement;
   lead: HTMLDivElement;
+  landPrompt: HTMLDivElement;
 };
 
 type TerrainParams = {
@@ -186,8 +187,13 @@ export class FlightMode implements ModeHandler {
     cycleTarget: false,
     hyperspace: false,
     toggleMap: false,
-    switchWeapon: false
+    switchWeapon: false,
+    land: false
   };
+
+  // Landing state
+  private canLand = false;
+  private readonly LANDING_ALTITUDE = 150; // altitude threshold for landing prompt
   private smPitch = 0;
   private smYaw = 0;
   private smRoll = 0;
@@ -323,11 +329,46 @@ export class FlightMode implements ModeHandler {
     this.simInput.toggleMap = this.input.state.toggleMap;
     this.simInput.fireSecondary = this.input.state.fireSecondary;
     this.simInput.switchWeapon = this.input.state.switchWeapon;
+    this.simInput.land = this.input.state.land;
 
     // Check for mode exit
     if (this.simInput.toggleMap) {
       ctx.requestModeChange("map", { type: "map" });
       return;
+    }
+
+    // Landing detection (only in scenarios with terrain)
+    if (this.scenario === "yavin_defense" && this.shipEid !== null) {
+      const altitude = (Transform.y[this.shipEid] ?? 0) - this.yavinTerrainHeight(
+        Transform.x[this.shipEid] ?? 0,
+        Transform.z[this.shipEid] ?? 0
+      );
+      this.canLand = altitude < this.LANDING_ALTITUDE;
+
+      // Handle landing request
+      if (this.simInput.land && this.canLand) {
+        const playerX = Transform.x[this.shipEid] ?? 0;
+        const playerZ = Transform.z[this.shipEid] ?? 0;
+        const groundY = this.yavinTerrainHeight(playerX, playerZ);
+
+        ctx.requestModeChange("ground", {
+          type: "ground_from_flight",
+          landingPosition: {
+            x: playerX,
+            y: groundY,
+            z: playerZ
+          },
+          playerState: {
+            health: Health.hp[this.shipEid] ?? 100,
+            maxHealth: Health.maxHp[this.shipEid] ?? 100,
+            shields: Shield.sp[this.shipEid] ?? 0,
+            maxShields: Shield.maxSp[this.shipEid] ?? 0
+          },
+          planetIndex: 0, // Yavin
+          system: this.currentSystem // Pass system for return transition
+        });
+        return;
+      }
     }
 
     // Handle Yavin restart
@@ -1538,6 +1579,7 @@ export class FlightMode implements ModeHandler {
       </div>
       <div id="hud-bracket" class="hud-bracket hidden"></div>
       <div id="hud-lead" class="hud-lead hidden"></div>
+      <div id="hud-land-prompt" class="hud-land-prompt hidden">PRESS L TO LAND</div>
       <div class="hud-left">
         <div class="hud-label">SPD</div>
         <div id="hud-speed" class="hud-value">0</div>
@@ -1589,7 +1631,8 @@ export class FlightMode implements ModeHandler {
       lock: q<HTMLDivElement>("#hud-lock"),
       mission: q<HTMLDivElement>("#hud-mission"),
       bracket: q<HTMLDivElement>("#hud-bracket"),
-      lead: q<HTMLDivElement>("#hud-lead")
+      lead: q<HTMLDivElement>("#hud-lead"),
+      landPrompt: q<HTMLDivElement>("#hud-land-prompt")
     };
   }
 
@@ -1717,6 +1760,9 @@ export class FlightMode implements ModeHandler {
       this.lockTargetEid = -1;
       els.lock.textContent = "LOCK 0%";
     }
+
+    // Landing prompt visibility
+    els.landPrompt.classList.toggle("hidden", !this.canLand);
   }
 
   private updateTargetBracket(ctx: ModeContext, teid: number, dtSeconds: number): void {

@@ -48,7 +48,8 @@ describe('Ground Systems', () => {
         aimPitch: -0.2,
         toggleMap: false,
         dodge: false,
-        throwGrenade: false
+        throwGrenade: false,
+        launch: false
       };
 
       syncPlayerGroundInput(world, eid, inputState);
@@ -80,7 +81,8 @@ describe('Ground Systems', () => {
         aimPitch: 0,
         toggleMap: false,
         dodge: false,
-        throwGrenade: false
+        throwGrenade: false,
+        launch: false
       };
 
       // Should not throw

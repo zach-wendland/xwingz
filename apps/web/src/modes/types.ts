@@ -9,7 +9,7 @@ import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js
 import type { SystemDef } from "@xwingz/procgen";
 import type { Profile } from "../state/ProfileManager";
 
-export type Mode = "map" | "flight" | "ground";
+export type Mode = "map" | "flight" | "ground" | "conquest";
 
 /**
  * Shared context passed to all mode handlers
@@ -38,12 +38,46 @@ export interface ModeContext {
 }
 
 /**
+ * Position data for seamless transitions
+ */
+export interface TransitionPosition {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Preserved player state across transitions
+ */
+export interface PreservedPlayerState {
+  health: number;
+  maxHealth: number;
+  shields?: number;
+  maxShields?: number;
+}
+
+/**
  * Data passed during mode transitions
  */
 export type ModeTransitionData =
-  | { type: "flight"; system: SystemDef; scenario: "sandbox" | "yavin_defense" }
+  | { type: "flight"; system: SystemDef; scenario: "sandbox" | "yavin_defense" | "conquest" }
   | { type: "ground" }
-  | { type: "map" };
+  | { type: "map" }
+  | { type: "conquest" }
+  | {
+      type: "flight_from_ground";
+      system: SystemDef;
+      launchPosition: TransitionPosition;
+      playerState: PreservedPlayerState;
+      planetIndex: number;
+    }
+  | {
+      type: "ground_from_flight";
+      landingPosition: TransitionPosition;
+      playerState: PreservedPlayerState;
+      planetIndex: number;
+      system?: SystemDef | null;
+    };
 
 /**
  * Interface that all mode handlers must implement
@@ -92,4 +126,42 @@ export function isGroundTransition(data?: ModeTransitionData): data is { type: "
 
 export function isMapTransition(data?: ModeTransitionData): data is { type: "map" } {
   return data?.type === "map";
+}
+
+export function isConquestTransition(data?: ModeTransitionData): data is { type: "conquest" } {
+  return data?.type === "conquest";
+}
+
+/**
+ * Seamless transition type guards
+ */
+export interface FlightFromGroundData {
+  type: "flight_from_ground";
+  system: SystemDef;
+  launchPosition: TransitionPosition;
+  playerState: PreservedPlayerState;
+  planetIndex: number;
+}
+
+export interface GroundFromFlightData {
+  type: "ground_from_flight";
+  landingPosition: TransitionPosition;
+  playerState: PreservedPlayerState;
+  planetIndex: number;
+  system?: SystemDef | null; // System to return to on launch
+}
+
+export function isFlightFromGroundTransition(data?: ModeTransitionData): data is FlightFromGroundData {
+  return data?.type === "flight_from_ground";
+}
+
+export function isGroundFromFlightTransition(data?: ModeTransitionData): data is GroundFromFlightData {
+  return data?.type === "ground_from_flight";
+}
+
+/**
+ * Check if this is any kind of seamless domain transition
+ */
+export function isSeamlessTransition(data?: ModeTransitionData): boolean {
+  return data?.type === "flight_from_ground" || data?.type === "ground_from_flight";
 }

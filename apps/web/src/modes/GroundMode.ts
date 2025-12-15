@@ -25,7 +25,14 @@ import {
   createGroundPlane,
   type PhysicsWorld
 } from "@xwingz/physics";
-import type { ModeHandler, ModeContext } from "./types";
+import type {
+  ModeHandler,
+  ModeContext,
+  ModeTransitionData,
+  GroundFromFlightData,
+  PreservedPlayerState
+} from "./types";
+import { isGroundFromFlightTransition } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
 import { ExplosionManager } from "../rendering/effects";
 
@@ -49,6 +56,7 @@ export class GroundMode implements ModeHandler {
   private playerMesh: THREE.Object3D | null = null;
   private enemyMeshes = new Map<number, THREE.Object3D>();
   private commandPostMeshes: THREE.Object3D[] = [];
+  private landedShipMesh: THREE.Object3D | null = null;
 
   // Effects
   private explosions: ExplosionManager | null = null;
@@ -57,9 +65,24 @@ export class GroundMode implements ModeHandler {
   private camInit = false;
   private tmpCamOffset = new THREE.Vector3();
 
-  enter(ctx: ModeContext): void {
+  // Transition state (for seamless space-ground)
+  private transitionData: GroundFromFlightData | null = null;
+  private canLaunch = false;
+  private landedShipPosition = { x: 0, y: 0, z: 0 };
+  private readonly LAUNCH_RADIUS = 8; // How close to ship to launch
+
+  enter(ctx: ModeContext, data?: ModeTransitionData): void {
     ctx.controls.enabled = false;
     this.camInit = false;
+
+    // Check for seamless transition from flight mode
+    if (isGroundFromFlightTransition(data)) {
+      this.transitionData = data;
+      this.landedShipPosition = { ...data.landingPosition };
+    } else {
+      this.transitionData = null;
+      this.landedShipPosition = { x: 0, y: 0, z: 0 };
+    }
 
     // Initialize explosion manager
     this.explosions = new ExplosionManager(ctx.scene);
@@ -98,11 +121,25 @@ export class GroundMode implements ModeHandler {
     // Create input handler
     this.groundInput = createGroundInput(window);
 
-    // Spawn player soldier
-    this.playerSoldierEid = spawnSoldier(ctx.world, this.physicsWorld, 0, 1, 0, 0, 0, false);
+    // Spawn player soldier - use transition position if available
+    const spawnX = this.transitionData?.landingPosition.x ?? 0;
+    const spawnY = 1;
+    const spawnZ = (this.transitionData?.landingPosition.z ?? 0) + 5; // Offset from ship
+    this.playerSoldierEid = spawnSoldier(ctx.world, this.physicsWorld, spawnX, spawnY, spawnZ, 0, 0, false);
     this.playerMesh = this.buildSoldierMesh(0);
-    this.playerMesh.position.set(0, 0, 0);
+    this.playerMesh.position.set(spawnX, 0, spawnZ);
     ctx.scene.add(this.playerMesh);
+
+    // If transitioned from flight, spawn landed ship mesh
+    if (this.transitionData) {
+      this.landedShipMesh = this.buildLandedShipMesh();
+      this.landedShipMesh.position.set(
+        this.landedShipPosition.x,
+        this.landedShipPosition.y,
+        this.landedShipPosition.z
+      );
+      ctx.scene.add(this.landedShipMesh);
+    }
 
     // Spawn command posts
     const cpPositions = [
@@ -156,6 +193,28 @@ export class GroundMode implements ModeHandler {
     if (this.groundInput.state.toggleMap) {
       ctx.requestModeChange("map", { type: "map" });
       return;
+    }
+
+    // Launch detection (only if landed from flight with valid system)
+    if (this.transitionData?.system && this.playerSoldierEid !== null && hasComponent(ctx.world, Transform, this.playerSoldierEid)) {
+      const px = Transform.x[this.playerSoldierEid] ?? 0;
+      const pz = Transform.z[this.playerSoldierEid] ?? 0;
+      const dx = px - this.landedShipPosition.x;
+      const dz = pz - this.landedShipPosition.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      this.canLaunch = dist < this.LAUNCH_RADIUS;
+
+      // Handle launch
+      if (this.groundInput.state.launch && this.canLaunch) {
+        ctx.requestModeChange("flight", {
+          type: "flight",
+          system: this.transitionData.system,
+          scenario: "yavin_defense"
+        });
+        return;
+      }
+    } else {
+      this.canLaunch = false;
     }
 
     // Sync input to player entity
@@ -287,12 +346,23 @@ export class GroundMode implements ModeHandler {
       this.groundInput = null;
     }
 
+    // Remove landed ship mesh
+    if (this.landedShipMesh) {
+      ctx.scene.remove(this.landedShipMesh);
+      disposeObject(this.landedShipMesh);
+      this.landedShipMesh = null;
+    }
+
     // Dispose physics
     this.physicsWorld = null;
 
     // Dispose explosions
     this.explosions?.dispose();
     this.explosions = null;
+
+    // Reset transition state
+    this.transitionData = null;
+    this.canLaunch = false;
   }
 
   private handleCanvasClick = (): void => {
@@ -324,6 +394,55 @@ export class GroundMode implements ModeHandler {
     head.position.y = 1.65;
     head.castShadow = true;
     group.add(head);
+
+    return group;
+  }
+
+  private buildLandedShipMesh(): THREE.Object3D {
+    // Simple X-Wing representation when landed
+    const group = new THREE.Group();
+
+    // Fuselage
+    const fuselageGeo = new THREE.BoxGeometry(2, 1.5, 8);
+    const fuselageMat = new THREE.MeshStandardMaterial({ color: 0xe8f0ff, metalness: 0.3, roughness: 0.5 });
+    const fuselage = new THREE.Mesh(fuselageGeo, fuselageMat);
+    fuselage.position.y = 1.5;
+    fuselage.castShadow = true;
+    group.add(fuselage);
+
+    // Wings (closed position when landed)
+    const wingGeo = new THREE.BoxGeometry(10, 0.15, 2.5);
+    const wingMat = new THREE.MeshStandardMaterial({ color: 0x2b2f3a, metalness: 0.2, roughness: 0.7 });
+    const wing = new THREE.Mesh(wingGeo, wingMat);
+    wing.position.y = 1.5;
+    wing.castShadow = true;
+    group.add(wing);
+
+    // Landing gear (simple cylinders)
+    const gearGeo = new THREE.CylinderGeometry(0.15, 0.2, 1.2, 8);
+    const gearMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.6 });
+    const frontGear = new THREE.Mesh(gearGeo, gearMat);
+    frontGear.position.set(0, 0.6, -2.5);
+    group.add(frontGear);
+    const leftGear = new THREE.Mesh(gearGeo, gearMat);
+    leftGear.position.set(-2, 0.6, 2);
+    group.add(leftGear);
+    const rightGear = new THREE.Mesh(gearGeo, gearMat);
+    rightGear.position.set(2, 0.6, 2);
+    group.add(rightGear);
+
+    // Cockpit
+    const cockpitGeo = new THREE.SphereGeometry(0.8, 12, 12);
+    const cockpitMat = new THREE.MeshStandardMaterial({
+      color: 0x0c0f18,
+      roughness: 0.1,
+      transparent: true,
+      opacity: 0.6
+    });
+    const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
+    cockpit.position.set(0, 2.0, -1.5);
+    cockpit.scale.set(1.2, 0.8, 1.5);
+    group.add(cockpit);
 
     return group;
   }

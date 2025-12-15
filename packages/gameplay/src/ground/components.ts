@@ -182,12 +182,66 @@ export const CommandPost = defineComponent({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const GroundAI = defineComponent({
-  state: Types.ui8,            // 0=Idle, 1=MoveTo, 2=Attack, 3=Capture, 4=Flee
+  state: Types.ui8,            // 0=Idle, 1=MoveTo, 2=Attack, 3=Capture, 4=Flee, 5=Evade, 6=Strafe
   stateTime: Types.f32,        // seconds in current state
   targetEid: Types.i32,        // -1 when none
   waypointX: Types.f32,        // current nav target
   waypointY: Types.f32,
   waypointZ: Types.f32,
   aggression: Types.f32,       // 0..1
-  accuracy: Types.f32          // 0..1 (affects spread multiplier)
+  accuracy: Types.f32,         // 0..1 (affects spread multiplier)
+  strafeDir: Types.f32,        // -1 or 1 for strafe direction
+  strafeTimer: Types.f32       // time until strafe direction change
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAMAGE REACTION (for reactive AI evasion)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Tracks recent damage for AI reaction.
+ * When hit, AI can trigger evasive maneuvers.
+ */
+export const DamageReaction = defineComponent({
+  lastHitTime: Types.f32,      // time since last hit (seconds)
+  hitCount: Types.ui8,         // hits in recent window
+  evadeChance: Types.f32       // 0..1 chance to evade when hit
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VISUAL BLASTER BOLT (visible projectile instead of hitscan)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Visible blaster bolt projectile.
+ * Slower than hitscan, creates Star Wars-style blaster fire.
+ */
+export const BlasterBolt = defineComponent({
+  ownerEid: Types.i32,         // who fired it
+  ownerTeam: Types.i32,        // team ID for hit detection
+  damage: Types.f32,           // damage on hit
+  speed: Types.f32,            // m/s (150-200)
+  life: Types.f32,             // seconds remaining
+  maxLife: Types.f32           // for fade calculations
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUND VEHICLE (speeder bikes, AT-ST)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const enum GroundVehicleType {
+  SpeederBike = 0,
+  ATST = 1
+}
+
+/**
+ * Ground vehicle stats and state.
+ */
+export const GroundVehicle = defineComponent({
+  type: Types.ui8,             // GroundVehicleType
+  maxSpeed: Types.f32,         // m/s
+  acceleration: Types.f32,     // m/s²
+  turnRate: Types.f32,         // rad/s
+  weaponCooldown: Types.f32,   // time until next shot
+  weaponCooldownMax: Types.f32 // cooldown duration
 });

@@ -27,7 +27,11 @@ import {
   DodgeRoll,
   WeaponHeat,
   GrenadeInventory,
-  Grenade
+  Grenade,
+  DamageReaction,
+  BlasterBolt,
+  GroundVehicle,
+  GroundVehicleType
 } from "./components";
 import {
   Transform,
@@ -76,6 +80,8 @@ const groundAIQuery = defineQuery([
   Transform,
   Team
 ]);
+
+const blasterBoltQuery = defineQuery([BlasterBolt, Transform, Velocity]);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REUSABLE TEMPS
@@ -353,17 +359,34 @@ function exitVehicle(world: IWorld, playerEid: number, vehicleEid: number): void
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BLASTER WEAPON SYSTEM (hitscan)
+// BLASTER WEAPON SYSTEM (spawns visible bolts)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Track spawned bolts for renderer to pick up
+export type BlasterBoltSpawnEvent = {
+  eid: number;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  team: number;
+};
+
+const blasterBoltSpawnEvents: BlasterBoltSpawnEvent[] = [];
+
+export function consumeBlasterBoltSpawnEvents(): BlasterBoltSpawnEvent[] {
+  return blasterBoltSpawnEvents.splice(0, blasterBoltSpawnEvents.length);
+}
 
 export function blasterSystem(
   world: IWorld,
-  physics: PhysicsWorld,
+  _physics: PhysicsWorld,
   dt: number
 ): void {
   blasterFrameCounter++;
   const shooters = blasterQuery(world);
-  const targets = groundCombatantQuery(world);
 
   for (const eid of shooters) {
     // Update cooldown
@@ -397,8 +420,9 @@ export function blasterSystem(
       }
     }
 
+    // Spawn position (muzzle offset)
     const sx = Transform.x[eid] ?? 0;
-    const sy = Transform.y[eid] ?? 0;
+    const sy = (Transform.y[eid] ?? 0) + 1.3; // Chest height
     const sz = Transform.z[eid] ?? 0;
     const yaw = GroundInput.aimYaw[eid] ?? 0;
     const pitch = GroundInput.aimPitch[eid] ?? 0;
@@ -422,14 +446,119 @@ export function blasterSystem(
     tmpForward.z += (spreadRng.nextF01() - 0.5) * spread * 2;
     tmpForward.normalize();
 
-    const range = BlasterWeapon.range[eid] ?? 150;
     const damage = BlasterWeapon.damage[eid] ?? 20;
     const myTeam = Team.id[eid] ?? 0;
+    const boltSpeed = BLASTER_BOLT_SPEED;
+    const boltLife = (BlasterWeapon.range[eid] ?? 150) / boltSpeed;
 
-    // Simple target check (no physics raycast for now, just proximity in line)
+    // Muzzle offset forward
+    const muzzleX = sx + tmpForward.x * 0.8;
+    const muzzleY = sy + tmpForward.y * 0.8;
+    const muzzleZ = sz + tmpForward.z * 0.8;
+
+    // Spawn blaster bolt entity
+    const boltEid = addEntity(world);
+    addComponent(world, Transform, boltEid);
+    addComponent(world, Velocity, boltEid);
+    addComponent(world, BlasterBolt, boltEid);
+
+    Transform.x[boltEid] = muzzleX;
+    Transform.y[boltEid] = muzzleY;
+    Transform.z[boltEid] = muzzleZ;
+    Transform.qx[boltEid] = 0;
+    Transform.qy[boltEid] = 0;
+    Transform.qz[boltEid] = 0;
+    Transform.qw[boltEid] = 1;
+
+    Velocity.vx[boltEid] = tmpForward.x * boltSpeed;
+    Velocity.vy[boltEid] = tmpForward.y * boltSpeed;
+    Velocity.vz[boltEid] = tmpForward.z * boltSpeed;
+
+    BlasterBolt.ownerEid[boltEid] = eid;
+    BlasterBolt.ownerTeam[boltEid] = myTeam;
+    BlasterBolt.damage[boltEid] = damage;
+    BlasterBolt.speed[boltEid] = boltSpeed;
+    BlasterBolt.life[boltEid] = boltLife;
+    BlasterBolt.maxLife[boltEid] = boltLife;
+
+    // Record spawn event for renderer
+    blasterBoltSpawnEvents.push({
+      eid: boltEid,
+      x: muzzleX,
+      y: muzzleY,
+      z: muzzleZ,
+      vx: Velocity.vx[boltEid]!,
+      vy: Velocity.vy[boltEid]!,
+      vz: Velocity.vz[boltEid]!,
+      team: myTeam
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BLASTER BOLT FLIGHT SYSTEM (moves bolts and checks collisions)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function blasterBoltFlightSystem(world: IWorld, dt: number): void {
+  const bolts = blasterBoltQuery(world);
+  const targets = groundCombatantQuery(world);
+
+  for (const eid of bolts) {
+    // Update life
+    const life = (BlasterBolt.life[eid] ?? 0) - dt;
+    BlasterBolt.life[eid] = life;
+
+    if (life <= 0) {
+      removeEntity(world, eid);
+      continue;
+    }
+
+    // Move bolt
+    const vx = Velocity.vx[eid] ?? 0;
+    const vy = Velocity.vy[eid] ?? 0;
+    const vz = Velocity.vz[eid] ?? 0;
+
+    const oldX = Transform.x[eid] ?? 0;
+    const oldY = Transform.y[eid] ?? 0;
+    const oldZ = Transform.z[eid] ?? 0;
+
+    const newX = oldX + vx * dt;
+    const newY = oldY + vy * dt;
+    const newZ = oldZ + vz * dt;
+
+    Transform.x[eid] = newX;
+    Transform.y[eid] = newY;
+    Transform.z[eid] = newZ;
+
+    // Ground collision (remove if below ground)
+    if (newY < 0) {
+      groundImpactEvents.push({
+        x: newX,
+        y: 0,
+        z: newZ,
+        shooterTeam: BlasterBolt.ownerTeam[eid] ?? 0,
+        killed: false
+      });
+      removeEntity(world, eid);
+      continue;
+    }
+
+    // Check collision with targets (raycast from old to new position)
+    const ownerEid = BlasterBolt.ownerEid[eid] ?? -1;
+    const ownerTeam = BlasterBolt.ownerTeam[eid] ?? 0;
+    const damage = BlasterBolt.damage[eid] ?? 20;
+
+    // Ray direction (normalized)
+    const rayLen = Math.sqrt(vx * vx + vy * vy + vz * vz) * dt;
+    if (rayLen < 0.001) continue;
+
+    const rayDirX = vx * dt / rayLen;
+    const rayDirY = vy * dt / rayLen;
+    const rayDirZ = vz * dt / rayLen;
+
     for (const tid of targets) {
-      if (tid === eid) continue;
-      if ((Team.id[tid] ?? -1) === myTeam) continue;
+      if (tid === ownerEid) continue;
+      if ((Team.id[tid] ?? -1) === ownerTeam) continue;
 
       // Skip targets with active i-frames (dodge rolling)
       if (hasComponent(world, DodgeRoll, tid)) {
@@ -439,35 +568,48 @@ export function blasterSystem(
       const tx = Transform.x[tid] ?? 0;
       const ty = Transform.y[tid] ?? 0;
       const tz = Transform.z[tid] ?? 0;
-
-      const dx = tx - sx;
-      const dy = ty - sy;
-      const dz = tz - sz;
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-      if (dist > range) continue;
-
-      // Check if target is roughly in aim direction
-      const dotProduct = (dx * tmpForward.x + dy * tmpForward.y + dz * tmpForward.z) / dist;
       const hitRadius = HitRadius.r[tid] ?? 0.5;
-      const coneAngle = Math.asin(Math.min(1, hitRadius / dist));
 
-      if (dotProduct > Math.cos(coneAngle + spread)) {
+      // Closest point on ray to target center
+      const toTargetX = tx - oldX;
+      const toTargetY = ty - oldY;
+      const toTargetZ = tz - oldZ;
+
+      const dot = toTargetX * rayDirX + toTargetY * rayDirY + toTargetZ * rayDirZ;
+      const closestT = Math.max(0, Math.min(rayLen, dot));
+
+      const closestX = oldX + rayDirX * closestT;
+      const closestY = oldY + rayDirY * closestT;
+      const closestZ = oldZ + rayDirZ * closestT;
+
+      const dx = tx - closestX;
+      const dy = ty - closestY;
+      const dz = tz - closestZ;
+      const dist2 = dx * dx + dy * dy + dz * dz;
+
+      if (dist2 <= hitRadius * hitRadius) {
         // Hit!
         Health.hp[tid] = (Health.hp[tid] ?? 0) - damage;
 
+        // Record hit for AI damage reaction
+        recordHit(world, tid);
+
+        const killed = (Health.hp[tid] ?? 0) <= 0;
         groundImpactEvents.push({
-          x: tx,
-          y: ty,
-          z: tz,
-          shooterTeam: myTeam,
-          killed: (Health.hp[tid] ?? 0) <= 0
+          x: closestX,
+          y: closestY,
+          z: closestZ,
+          shooterTeam: ownerTeam,
+          killed
         });
 
-        if ((Health.hp[tid] ?? 0) <= 0) {
+        if (killed) {
           removeEntity(world, tid);
         }
-        break; // Only one hit per shot
+
+        // Remove bolt on hit
+        removeEntity(world, eid);
+        break;
       }
     }
   }
@@ -555,7 +697,7 @@ export function commandPostSystem(world: IWorld, dt: number): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GROUND AI SYSTEM (basic state machine)
+// GROUND AI SYSTEM (enhanced state machine with tactical behaviors)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const enum GroundAIState {
@@ -563,8 +705,58 @@ export const enum GroundAIState {
   MoveTo = 1,
   Attack = 2,
   Capture = 3,
-  Flee = 4
+  Flee = 4,
+  Evade = 5,   // Reactive dodge when hit
+  Strafe = 6   // Circle-strafe while attacking
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEAD INTERCEPT AIMING (ported from space combat)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compute time-to-intercept for a projectile to hit a moving target.
+ * Used for lead aiming - AI aims where target will be, not where it is.
+ * (Internal function - not exported to avoid collision with space module)
+ */
+function computeInterceptTime(
+  dx: number,
+  dy: number,
+  dz: number,
+  dvx: number,
+  dvy: number,
+  dvz: number,
+  projectileSpeed: number
+): number | null {
+  if (!Number.isFinite(projectileSpeed) || projectileSpeed <= 1e-3) return null;
+
+  const a = dvx * dvx + dvy * dvy + dvz * dvz - projectileSpeed * projectileSpeed;
+  const b = 2 * (dx * dvx + dy * dvy + dz * dvz);
+  const c = dx * dx + dy * dy + dz * dz;
+
+  // Handle near-linear case when relative speed ~= projectile speed
+  if (Math.abs(a) < 1e-6) {
+    if (Math.abs(b) < 1e-6) return null;
+    const t = -c / b;
+    return t > 0 ? t : null;
+  }
+
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+
+  const sqrtDisc = Math.sqrt(disc);
+  const invDen = 1 / (2 * a);
+  const t1 = (-b - sqrtDisc) * invDen;
+  const t2 = (-b + sqrtDisc) * invDen;
+
+  let t = Number.POSITIVE_INFINITY;
+  if (t1 > 0 && t1 < t) t = t1;
+  if (t2 > 0 && t2 < t) t = t2;
+  return t !== Number.POSITIVE_INFINITY ? t : null;
+}
+
+// Blaster bolt speed for lead aiming (m/s)
+const BLASTER_BOLT_SPEED = 150;
 
 export function groundAISystem(world: IWorld, dt: number): void {
   const ais = groundAIQuery(world);
@@ -579,39 +771,116 @@ export function groundAISystem(world: IWorld, dt: number): void {
     const sx = Transform.x[eid] ?? 0;
     const sy = Transform.y[eid] ?? 0;
     const sz = Transform.z[eid] ?? 0;
+    const svx = Velocity.vx[eid] ?? 0;
+    const svy = Velocity.vy[eid] ?? 0;
+    const svz = Velocity.vz[eid] ?? 0;
 
-    // Check for nearby enemies
+    // ─────────────────────────────────────────────────────────────
+    // 1. Scan for enemies and allies (for separation)
+    // ─────────────────────────────────────────────────────────────
     let nearestEnemy = -1;
     let nearestEnemyDist = Infinity;
+    let nearestEnemyX = 0, nearestEnemyZ = 0;
+
+    // Separation vector from nearby allies
+    let sepX = 0, sepZ = 0;
+    const SEPARATION_RADIUS = 4.0;
+    const SEPARATION_WEIGHT = 0.4;
 
     for (const tid of combatants) {
       if (tid === eid) continue;
-      if ((Team.id[tid] ?? -1) === myTeam) continue;
 
       const dx = (Transform.x[tid] ?? 0) - sx;
       const dy = (Transform.y[tid] ?? 0) - sy;
       const dz = (Transform.z[tid] ?? 0) - sz;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      if (dist < nearestEnemyDist) {
-        nearestEnemyDist = dist;
-        nearestEnemy = tid;
+      const targetTeam = Team.id[tid] ?? -1;
+
+      if (targetTeam === myTeam) {
+        // Ally - compute separation
+        if (dist < SEPARATION_RADIUS && dist > 0.1) {
+          const repel = (SEPARATION_RADIUS - dist) / SEPARATION_RADIUS;
+          sepX -= (dx / dist) * repel;
+          sepZ -= (dz / dist) * repel;
+        }
+      } else {
+        // Enemy
+        if (dist < nearestEnemyDist) {
+          nearestEnemyDist = dist;
+          nearestEnemy = tid;
+          nearestEnemyX = Transform.x[tid] ?? 0;
+          nearestEnemyZ = Transform.z[tid] ?? 0;
+        }
       }
     }
 
-    // State transitions
+    // ─────────────────────────────────────────────────────────────
+    // 2. Check for reactive evasion (recent hit triggers evade)
+    // ─────────────────────────────────────────────────────────────
     const aggression = GroundAI.aggression[eid] ?? 0.5;
     const engageRange = 30 + aggression * 20;
     const fleeHealthThreshold = 20 + (1 - aggression) * 30;
-
     const hp = Health.hp[eid] ?? 100;
+
+    if (hasComponent(world, DamageReaction, eid)) {
+      const lastHit = DamageReaction.lastHitTime[eid] ?? 999;
+      const evadeChance = DamageReaction.evadeChance[eid] ?? 0.6;
+
+      // If hit recently and not already evading, trigger evasion
+      if (lastHit < 0.5 && state !== GroundAIState.Evade && state !== GroundAIState.Flee) {
+        // Use deterministic check based on entity ID
+        const evadeRoll = ((eid * 7919) % 100) / 100;
+        if (evadeRoll < evadeChance) {
+          state = GroundAIState.Evade;
+          stateTime = 0;
+          // Trigger dodge roll
+          GroundInput.dodge[eid] = 1;
+          // Pick strafe direction away from attacker
+          GroundAI.strafeDir[eid] = nearestEnemy >= 0 ? (((eid * 13) % 2) === 0 ? 1 : -1) : 1;
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 3. State transitions
+    // ─────────────────────────────────────────────────────────────
     if (hp < fleeHealthThreshold && state !== GroundAIState.Flee) {
       state = GroundAIState.Flee;
       stateTime = 0;
-    } else if (nearestEnemy >= 0 && nearestEnemyDist < engageRange && state !== GroundAIState.Attack) {
-      state = GroundAIState.Attack;
+    } else if (state === GroundAIState.Evade && stateTime > 0.8) {
+      // After evade, transition to strafe attack if enemy nearby
+      if (nearestEnemy >= 0 && nearestEnemyDist < engageRange) {
+        state = GroundAIState.Strafe;
+        GroundAI.targetEid[eid] = nearestEnemy;
+        GroundAI.strafeTimer[eid] = 1.5 + ((eid * 17) % 100) / 100; // 1.5-2.5s
+      } else {
+        state = GroundAIState.Idle;
+      }
+      stateTime = 0;
+    } else if (nearestEnemy >= 0 && nearestEnemyDist < engageRange &&
+               state !== GroundAIState.Attack && state !== GroundAIState.Strafe &&
+               state !== GroundAIState.Evade && state !== GroundAIState.Flee) {
+      // Engage enemy - aggressive AI uses strafe, others use attack
+      if (aggression > 0.6) {
+        state = GroundAIState.Strafe;
+        GroundAI.strafeDir[eid] = ((eid * 13) % 2) === 0 ? 1 : -1;
+        GroundAI.strafeTimer[eid] = 1.5 + ((eid * 23) % 100) / 100;
+      } else {
+        state = GroundAIState.Attack;
+      }
       stateTime = 0;
       GroundAI.targetEid[eid] = nearestEnemy;
+    } else if (state === GroundAIState.Strafe && stateTime > 4) {
+      // Switch between strafe and attack periodically
+      state = GroundAIState.Attack;
+      stateTime = 0;
+    } else if (state === GroundAIState.Attack && stateTime > 3 && aggression > 0.5) {
+      // Switch to strafe for variety
+      state = GroundAIState.Strafe;
+      GroundAI.strafeDir[eid] = ((eid * 13 + Math.floor(stateTime * 10)) % 2) === 0 ? 1 : -1;
+      GroundAI.strafeTimer[eid] = 1.5;
+      stateTime = 0;
     } else if (state === GroundAIState.Idle && stateTime > 2) {
       // Find a command post to capture
       let targetPost = -1;
@@ -640,10 +909,13 @@ export function groundAISystem(world: IWorld, dt: number): void {
       }
     }
 
-    // Execute state behavior
+    // ─────────────────────────────────────────────────────────────
+    // 4. Execute state behavior
+    // ─────────────────────────────────────────────────────────────
     let moveX = 0;
     let moveZ = 0;
     let wantsFire = 0;
+    let aimYaw = GroundInput.aimYaw[eid] ?? 0;
 
     if (state === GroundAIState.MoveTo || state === GroundAIState.Capture) {
       const wx = GroundAI.waypointX[eid] ?? 0;
@@ -653,46 +925,102 @@ export function groundAISystem(world: IWorld, dt: number): void {
       const dist = Math.sqrt(dx * dx + dz * dz);
 
       if (dist > 2) {
-        // Move toward waypoint
-        const yaw = Math.atan2(-dx, -dz);
-        GroundInput.aimYaw[eid] = yaw;
-        moveZ = 1; // Forward
+        aimYaw = Math.atan2(-dx, -dz);
+        moveZ = 1;
       } else {
         state = GroundAIState.Capture;
       }
-    } else if (state === GroundAIState.Attack) {
+    } else if (state === GroundAIState.Attack || state === GroundAIState.Strafe) {
       const tid = GroundAI.targetEid[eid] ?? -1;
       if (tid >= 0 && hasComponent(world, Transform, tid)) {
         const tx = Transform.x[tid] ?? 0;
+        const ty = Transform.y[tid] ?? 0;
         const tz = Transform.z[tid] ?? 0;
+        const tvx = Velocity.vx[tid] ?? 0;
+        const tvy = Velocity.vy[tid] ?? 0;
+        const tvz = Velocity.vz[tid] ?? 0;
+
+        // ─────────────────────────────────────────────────────────
+        // LEAD INTERCEPT AIMING
+        // Calculate where to aim based on target movement
+        // ─────────────────────────────────────────────────────────
         const dx = tx - sx;
+        const dy = ty - sy;
         const dz = tz - sz;
-        const dist = Math.sqrt(dx * dx + dz * dz);
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-        // Face target
-        const yaw = Math.atan2(-dx, -dz);
-        GroundInput.aimYaw[eid] = yaw;
+        // Relative velocity
+        const rvx = tvx - svx;
+        const rvy = tvy - svy;
+        const rvz = tvz - svz;
 
-        if (dist > 15) {
-          moveZ = 1; // Advance
-        } else if (dist < 8) {
-          moveZ = -0.5; // Back up
+        // Compute lead time
+        const leadTime = computeInterceptTime(dx, dy, dz, rvx, rvy, rvz, BLASTER_BOLT_SPEED) ?? dist / BLASTER_BOLT_SPEED;
+
+        // Predicted target position
+        const predX = tx + tvx * leadTime;
+        const predZ = tz + tvz * leadTime;
+        const predDx = predX - sx;
+        const predDz = predZ - sz;
+
+        // Aim at predicted position
+        aimYaw = Math.atan2(-predDx, -predDz);
+
+        // Movement behavior differs between Attack and Strafe
+        if (state === GroundAIState.Strafe) {
+          // Circle-strafe: move perpendicular to target
+          const strafeDir = GroundAI.strafeDir[eid] ?? 1;
+          let strafeTimer = GroundAI.strafeTimer[eid] ?? 0;
+          strafeTimer -= dt;
+
+          // Change strafe direction periodically
+          if (strafeTimer <= 0) {
+            GroundAI.strafeDir[eid] = -strafeDir;
+            GroundAI.strafeTimer[eid] = 1.5 + ((eid * 31) % 100) / 100;
+          } else {
+            GroundAI.strafeTimer[eid] = strafeTimer;
+          }
+
+          // Strafe perpendicular + slight advance/retreat
+          moveX = strafeDir * 0.8;
+          if (dist > 20) {
+            moveZ = 0.5; // Advance while strafing
+          } else if (dist < 10) {
+            moveZ = -0.3; // Retreat while strafing
+          }
+        } else {
+          // Standard attack: advance/retreat based on distance
+          if (dist > 15) {
+            moveZ = 1;
+          } else if (dist < 8) {
+            moveZ = -0.5;
+          }
         }
 
         wantsFire = 1;
       } else {
+        // Target lost
         state = GroundAIState.Idle;
         stateTime = 0;
       }
+    } else if (state === GroundAIState.Evade) {
+      // During evade, move in strafe direction
+      const strafeDir = GroundAI.strafeDir[eid] ?? 1;
+      moveX = strafeDir;
+      moveZ = -0.3; // Slight retreat
+
+      // Keep facing nearest enemy if known
+      if (nearestEnemy >= 0) {
+        const dx = nearestEnemyX - sx;
+        const dz = nearestEnemyZ - sz;
+        aimYaw = Math.atan2(-dx, -dz);
+      }
     } else if (state === GroundAIState.Flee) {
       if (nearestEnemy >= 0) {
-        const tx = Transform.x[nearestEnemy] ?? 0;
-        const tz = Transform.z[nearestEnemy] ?? 0;
-        const dx = sx - tx; // Away from enemy
-        const dz = sz - tz;
-        const yaw = Math.atan2(-dx, -dz);
-        GroundInput.aimYaw[eid] = yaw;
-        moveZ = 1; // Run away
+        const dx = sx - nearestEnemyX;
+        const dz = sz - nearestEnemyZ;
+        aimYaw = Math.atan2(-dx, -dz);
+        moveZ = 1;
       }
       if (stateTime > 5) {
         state = GroundAIState.Idle;
@@ -700,7 +1028,32 @@ export function groundAISystem(world: IWorld, dt: number): void {
       }
     }
 
-    // Apply AI decisions to input components
+    // ─────────────────────────────────────────────────────────────
+    // 5. Apply separation to movement
+    // ─────────────────────────────────────────────────────────────
+    const sepLen = Math.sqrt(sepX * sepX + sepZ * sepZ);
+    if (sepLen > 0.1 && state !== GroundAIState.Evade) {
+      // Convert separation to local movement space
+      const cosYaw = Math.cos(aimYaw);
+      const sinYaw = Math.sin(aimYaw);
+      const localSepX = sepX * cosYaw - sepZ * sinYaw;
+      const localSepZ = sepX * sinYaw + sepZ * cosYaw;
+
+      moveX += localSepX * SEPARATION_WEIGHT;
+      moveZ += localSepZ * SEPARATION_WEIGHT;
+    }
+
+    // Clamp movement
+    const moveLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
+    if (moveLen > 1) {
+      moveX /= moveLen;
+      moveZ /= moveLen;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 6. Apply AI decisions to input components
+    // ─────────────────────────────────────────────────────────────
+    GroundInput.aimYaw[eid] = aimYaw;
     GroundInput.moveX[eid] = moveX;
     GroundInput.moveZ[eid] = moveZ;
     GroundInput.firePrimary[eid] = wantsFire;
@@ -708,6 +1061,38 @@ export function groundAISystem(world: IWorld, dt: number): void {
 
     GroundAI.state[eid] = state;
     GroundAI.stateTime[eid] = stateTime;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAMAGE REACTION SYSTEM (tracks recent hits for AI evasion)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const damageReactionQuery = defineQuery([DamageReaction]);
+
+export function damageReactionSystem(world: IWorld, dt: number): void {
+  const entities = damageReactionQuery(world);
+
+  for (const eid of entities) {
+    // Increment time since last hit
+    const lastHit = DamageReaction.lastHitTime[eid] ?? 999;
+    DamageReaction.lastHitTime[eid] = lastHit + dt;
+
+    // Decay hit count over time
+    if (lastHit > 2.0) {
+      DamageReaction.hitCount[eid] = 0;
+    }
+  }
+}
+
+/**
+ * Record a hit on an entity for damage reaction system.
+ * Called by blasterSystem when a hit lands.
+ */
+export function recordHit(world: IWorld, eid: number): void {
+  if (hasComponent(world, DamageReaction, eid)) {
+    DamageReaction.lastHitTime[eid] = 0;
+    DamageReaction.hitCount[eid] = (DamageReaction.hitCount[eid] ?? 0) + 1;
   }
 }
 
@@ -1241,17 +1626,29 @@ export function spawnSoldier(
   // AI components
   if (isAI) {
     addComponent(world, GroundAI, eid);
+    addComponent(world, DamageReaction, eid);
+
     GroundAI.state[eid] = GroundAIState.Idle;
     GroundAI.stateTime[eid] = 0;
     GroundAI.targetEid[eid] = -1;
     GroundAI.waypointX[eid] = x;
     GroundAI.waypointY[eid] = y;
     GroundAI.waypointZ[eid] = z;
+
     // Deterministic AI stats based on seed
     const aiSeed = seed !== BigInt(0) ? seed : deriveSeed(BigInt(eid), "ai_stats");
     const aiRng = createRng(aiSeed);
     GroundAI.aggression[eid] = 0.3 + aiRng.nextF01() * 0.5;
     GroundAI.accuracy[eid] = 0.4 + aiRng.nextF01() * 0.4;
+
+    // Strafe behavior
+    GroundAI.strafeDir[eid] = aiRng.nextF01() > 0.5 ? 1 : -1;
+    GroundAI.strafeTimer[eid] = 1.5 + aiRng.nextF01();
+
+    // Damage reaction for evasion
+    DamageReaction.lastHitTime[eid] = 999; // No recent hits
+    DamageReaction.hitCount[eid] = 0;
+    DamageReaction.evadeChance[eid] = 0.4 + aiRng.nextF01() * 0.4; // 40-80% evade chance
   }
 
   // Create Rapier physics objects
@@ -1322,4 +1719,277 @@ export function getPlayerSoldier(world: IWorld): number | null {
     }
   }
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUND VEHICLE SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+const groundVehicleQuery = defineQuery([GroundVehicle, Transform, Velocity, Health, Team]);
+
+/**
+ * Move ground vehicles based on pilot input.
+ * Vehicles are driven by the pilot's GroundInput when piloted.
+ */
+export function groundVehicleMovementSystem(
+  world: IWorld,
+  physics: PhysicsWorld,
+  dt: number
+): void {
+  const vehicles = groundVehicleQuery(world);
+  const onFootEntities = playerGroundQuery(world);
+
+  for (const vEid of vehicles) {
+    // Find if anyone is piloting this vehicle
+    let pilotEid = -1;
+    for (const eid of onFootEntities) {
+      if (hasComponent(world, Piloting, eid)) {
+        if ((Piloting.vehicleEid[eid] ?? -1) === vEid) {
+          pilotEid = eid;
+          break;
+        }
+      }
+    }
+
+    if (pilotEid < 0) continue; // No pilot - vehicle stays still
+
+    // Get pilot input
+    const inputX = GroundInput.moveX[pilotEid] ?? 0;
+    const inputZ = GroundInput.moveZ[pilotEid] ?? 0;
+    const yaw = GroundInput.aimYaw[pilotEid] ?? 0;
+    const wantsFire = (GroundInput.firePrimary[pilotEid] ?? 0) !== 0;
+
+    const maxSpeed = GroundVehicle.maxSpeed[vEid] ?? 15;
+    const accel = GroundVehicle.acceleration[vEid] ?? 10;
+    const turnRate = GroundVehicle.turnRate[vEid] ?? 2;
+
+    // Get current velocity
+    let vx = Velocity.vx[vEid] ?? 0;
+    let vz = Velocity.vz[vEid] ?? 0;
+    let vy = Velocity.vy[vEid] ?? 0;
+
+    // Compute local forward/right from yaw
+    const fwdX = -Math.sin(yaw);
+    const fwdZ = -Math.cos(yaw);
+    const rightX = Math.cos(yaw);
+    const rightZ = -Math.sin(yaw);
+
+    // Desired acceleration direction
+    const desiredAccelX = rightX * inputX + fwdX * inputZ;
+    const desiredAccelZ = rightZ * inputX + fwdZ * inputZ;
+    const accelMag = Math.sqrt(desiredAccelX * desiredAccelX + desiredAccelZ * desiredAccelZ);
+
+    if (accelMag > 0.1) {
+      // Accelerate
+      vx += (desiredAccelX / accelMag) * accel * dt;
+      vz += (desiredAccelZ / accelMag) * accel * dt;
+    } else {
+      // Decelerate (friction)
+      const friction = 0.95;
+      vx *= friction;
+      vz *= friction;
+    }
+
+    // Clamp to max speed
+    const speed = Math.sqrt(vx * vx + vz * vz);
+    if (speed > maxSpeed) {
+      vx = (vx / speed) * maxSpeed;
+      vz = (vz / speed) * maxSpeed;
+    }
+
+    // Apply gravity if not grounded
+    vy -= 9.81 * dt;
+
+    // Update position
+    const oldY = Transform.y[vEid] ?? 0;
+    Transform.x[vEid] = (Transform.x[vEid] ?? 0) + vx * dt;
+    Transform.y[vEid] = oldY + vy * dt;
+    Transform.z[vEid] = (Transform.z[vEid] ?? 0) + vz * dt;
+
+    // Simple ground clamp
+    if ((Transform.y[vEid] ?? 0) < 0.5) {
+      Transform.y[vEid] = 0.5;
+      vy = 0;
+    }
+
+    // Store velocity
+    Velocity.vx[vEid] = vx;
+    Velocity.vy[vEid] = vy;
+    Velocity.vz[vEid] = vz;
+
+    // Update orientation
+    tmpQuat.setFromAxisAngle(tmpUp, yaw);
+    Transform.qx[vEid] = tmpQuat.x;
+    Transform.qy[vEid] = tmpQuat.y;
+    Transform.qz[vEid] = tmpQuat.z;
+    Transform.qw[vEid] = tmpQuat.w;
+
+    // Sync pilot input to vehicle for weapons
+    GroundInput.aimYaw[vEid] = yaw;
+    GroundInput.aimPitch[vEid] = GroundInput.aimPitch[pilotEid] ?? 0;
+    GroundInput.firePrimary[vEid] = wantsFire ? 1 : 0;
+
+    // Weapon cooldown
+    const cdRem = (GroundVehicle.weaponCooldown[vEid] ?? 0) - dt;
+    GroundVehicle.weaponCooldown[vEid] = Math.max(0, cdRem);
+
+    // Vehicle fires blaster bolts if has InGroundDomain and BlasterWeapon
+    // (handled by blasterSystem if those components exist)
+
+    void turnRate; // For future steering refinement
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPAWN SPEEDER BIKE
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function spawnSpeederBike(
+  world: IWorld,
+  x: number,
+  y: number,
+  z: number,
+  teamId: number
+): number {
+  const eid = addEntity(world);
+
+  addComponent(world, Transform, eid);
+  addComponent(world, Velocity, eid);
+  addComponent(world, Team, eid);
+  addComponent(world, Health, eid);
+  addComponent(world, HitRadius, eid);
+  addComponent(world, GroundVehicle, eid);
+  addComponent(world, Enterable, eid);
+  addComponent(world, InGroundDomain, eid);
+  addComponent(world, GroundInput, eid);
+  addComponent(world, BlasterWeapon, eid);
+
+  Transform.x[eid] = x;
+  Transform.y[eid] = y;
+  Transform.z[eid] = z;
+  Transform.qx[eid] = 0;
+  Transform.qy[eid] = 0;
+  Transform.qz[eid] = 0;
+  Transform.qw[eid] = 1;
+
+  Velocity.vx[eid] = 0;
+  Velocity.vy[eid] = 0;
+  Velocity.vz[eid] = 0;
+
+  Team.id[eid] = teamId;
+  Health.hp[eid] = 80;      // Fragile
+  Health.maxHp[eid] = 80;
+  HitRadius.r[eid] = 1.5;
+
+  // Vehicle stats - fast and maneuverable
+  GroundVehicle.type[eid] = GroundVehicleType.SpeederBike;
+  GroundVehicle.maxSpeed[eid] = 25;         // Fast!
+  GroundVehicle.acceleration[eid] = 15;
+  GroundVehicle.turnRate[eid] = 3.0;
+  GroundVehicle.weaponCooldown[eid] = 0;
+  GroundVehicle.weaponCooldownMax[eid] = 0.15;  // Rapid fire
+
+  // Enterable - 1 seat, quick entry
+  Enterable.seatCount[eid] = 1;
+  Enterable.seatsFilled[eid] = 0;
+  Enterable.enterRadius[eid] = 3;
+
+  // Light blaster
+  BlasterWeapon.damage[eid] = 12;
+  BlasterWeapon.fireRate[eid] = 6;
+  BlasterWeapon.cooldownRemaining[eid] = 0;
+  BlasterWeapon.range[eid] = 80;
+  BlasterWeapon.spread[eid] = 0.04;
+
+  // Initialize input
+  GroundInput.moveX[eid] = 0;
+  GroundInput.moveZ[eid] = 0;
+  GroundInput.jump[eid] = 0;
+  GroundInput.sprint[eid] = 0;
+  GroundInput.crouch[eid] = 0;
+  GroundInput.aimYaw[eid] = 0;
+  GroundInput.aimPitch[eid] = 0;
+  GroundInput.interact[eid] = 0;
+  GroundInput.firePrimary[eid] = 0;
+  GroundInput.dodge[eid] = 0;
+  GroundInput.throwGrenade[eid] = 0;
+
+  return eid;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPAWN AT-ST WALKER
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function spawnATST(
+  world: IWorld,
+  x: number,
+  y: number,
+  z: number,
+  teamId: number
+): number {
+  const eid = addEntity(world);
+
+  addComponent(world, Transform, eid);
+  addComponent(world, Velocity, eid);
+  addComponent(world, Team, eid);
+  addComponent(world, Health, eid);
+  addComponent(world, HitRadius, eid);
+  addComponent(world, GroundVehicle, eid);
+  addComponent(world, Enterable, eid);
+  addComponent(world, InGroundDomain, eid);
+  addComponent(world, GroundInput, eid);
+  addComponent(world, BlasterWeapon, eid);
+
+  Transform.x[eid] = x;
+  Transform.y[eid] = y;
+  Transform.z[eid] = z;
+  Transform.qx[eid] = 0;
+  Transform.qy[eid] = 0;
+  Transform.qz[eid] = 0;
+  Transform.qw[eid] = 1;
+
+  Velocity.vx[eid] = 0;
+  Velocity.vy[eid] = 0;
+  Velocity.vz[eid] = 0;
+
+  Team.id[eid] = teamId;
+  Health.hp[eid] = 500;     // Tanky!
+  Health.maxHp[eid] = 500;
+  HitRadius.r[eid] = 4.0;
+
+  // Vehicle stats - slow but powerful
+  GroundVehicle.type[eid] = GroundVehicleType.ATST;
+  GroundVehicle.maxSpeed[eid] = 6;          // Slow walker
+  GroundVehicle.acceleration[eid] = 4;
+  GroundVehicle.turnRate[eid] = 1.2;
+  GroundVehicle.weaponCooldown[eid] = 0;
+  GroundVehicle.weaponCooldownMax[eid] = 0.4;
+
+  // Enterable - 2 seats (pilot + gunner)
+  Enterable.seatCount[eid] = 2;
+  Enterable.seatsFilled[eid] = 0;
+  Enterable.enterRadius[eid] = 5;
+
+  // Heavy blasters
+  BlasterWeapon.damage[eid] = 35;
+  BlasterWeapon.fireRate[eid] = 4;
+  BlasterWeapon.cooldownRemaining[eid] = 0;
+  BlasterWeapon.range[eid] = 120;
+  BlasterWeapon.spread[eid] = 0.06;
+
+  // Initialize input
+  GroundInput.moveX[eid] = 0;
+  GroundInput.moveZ[eid] = 0;
+  GroundInput.jump[eid] = 0;
+  GroundInput.sprint[eid] = 0;
+  GroundInput.crouch[eid] = 0;
+  GroundInput.aimYaw[eid] = 0;
+  GroundInput.aimPitch[eid] = 0;
+  GroundInput.interact[eid] = 0;
+  GroundInput.firePrimary[eid] = 0;
+  GroundInput.dodge[eid] = 0;
+  GroundInput.throwGrenade[eid] = 0;
+
+  return eid;
 }

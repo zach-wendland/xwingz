@@ -14,6 +14,7 @@
 
 import { defineComponent, Types, IWorld, addEntity, addComponent, removeEntity, hasComponent, defineQuery } from "bitecs";
 import { Quaternion, Vector3, Euler } from "three";
+import { createRng, deriveSeed } from "@xwingz/procgen";
 import {
   Transform,
   Velocity,
@@ -28,6 +29,9 @@ import {
   AIControlled,
   FighterBrain
 } from "./components";
+
+// Frame counter for deterministic buzz droid escape
+let buzzDroidFrameCounter = 0;
 
 // ============================================================================
 // CORUSCANT-SPECIFIC COMPONENTS
@@ -232,6 +236,7 @@ export function buzzDroidSystem(
   barrelRollInput: boolean,
   barrelRollCooldown: { value: number }
 ): void {
+  buzzDroidFrameCounter++;
   const swarms = buzzSwarmQuery(world);
   const victims = buzzVictimQuery(world);
 
@@ -284,7 +289,10 @@ export function buzzDroidSystem(
     if (barrelRollInput && barrelRollCooldown.value <= 0) {
       const successChance = Math.max(0.35, 0.85 - attachTime * 0.1);
 
-      if (Math.random() < successChance) {
+      // Deterministic escape check based on swarm entity and frame counter
+      const escapeSeed = deriveSeed(BigInt(swarmEid), "buzz_escape", buzzDroidFrameCounter.toString());
+      const escapeRng = createRng(escapeSeed);
+      if (escapeRng.nextF01() < successChance) {
         // Success! Detach and destroy swarm
         BuzzDroidSwarm.attachedToEid[swarmEid] = -1;
         removeEntity(world, swarmEid);

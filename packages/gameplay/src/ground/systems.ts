@@ -9,6 +9,10 @@ import {
 } from "bitecs";
 import { Vector3, Quaternion } from "three";
 import type { PhysicsWorld } from "@xwingz/physics";
+import { createRng, deriveSeed } from "@xwingz/procgen";
+
+// Frame counter for deterministic blaster spread (incremented each blasterSystem call)
+let blasterFrameCounter = 0;
 import {
   CharacterController,
   GroundInput,
@@ -357,6 +361,7 @@ export function blasterSystem(
   physics: PhysicsWorld,
   dt: number
 ): void {
+  blasterFrameCounter++;
   const shooters = blasterQuery(world);
   const targets = groundCombatantQuery(world);
 
@@ -408,11 +413,13 @@ export function blasterSystem(
     tmpQuat.setFromAxisAngle(tmpRight, pitch);
     tmpForward.applyQuaternion(tmpQuat).normalize();
 
-    // Add spread
+    // Add spread (deterministic based on entity ID and frame counter)
     const spread = BlasterWeapon.spread[eid] ?? 0.02;
-    tmpForward.x += (Math.random() - 0.5) * spread * 2;
-    tmpForward.y += (Math.random() - 0.5) * spread * 2;
-    tmpForward.z += (Math.random() - 0.5) * spread * 2;
+    const spreadSeed = deriveSeed(BigInt(eid), "blaster_spread", blasterFrameCounter.toString());
+    const spreadRng = createRng(spreadSeed);
+    tmpForward.x += (spreadRng.nextF01() - 0.5) * spread * 2;
+    tmpForward.y += (spreadRng.nextF01() - 0.5) * spread * 2;
+    tmpForward.z += (spreadRng.nextF01() - 0.5) * spread * 2;
     tmpForward.normalize();
 
     const range = BlasterWeapon.range[eid] ?? 150;
@@ -1109,7 +1116,8 @@ export function spawnSoldier(
   z: number,
   teamId: number,
   classId: SoldierClass = 0,
-  isAI: boolean = false
+  isAI: boolean = false,
+  seed: bigint = BigInt(0)
 ): number {
   const { rapier, world: rapierWorld, characterControllers, rigidBodies, colliders } = physics;
 
@@ -1239,8 +1247,11 @@ export function spawnSoldier(
     GroundAI.waypointX[eid] = x;
     GroundAI.waypointY[eid] = y;
     GroundAI.waypointZ[eid] = z;
-    GroundAI.aggression[eid] = 0.3 + Math.random() * 0.5;
-    GroundAI.accuracy[eid] = 0.4 + Math.random() * 0.4;
+    // Deterministic AI stats based on seed
+    const aiSeed = seed !== BigInt(0) ? seed : deriveSeed(BigInt(eid), "ai_stats");
+    const aiRng = createRng(aiSeed);
+    GroundAI.aggression[eid] = 0.3 + aiRng.nextF01() * 0.5;
+    GroundAI.accuracy[eid] = 0.4 + aiRng.nextF01() * 0.4;
   }
 
   // Create Rapier physics objects

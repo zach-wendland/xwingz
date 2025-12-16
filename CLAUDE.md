@@ -7,24 +7,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm install              # Install workspace dependencies
 npm run dev              # Run web client (Vite dev server)
-npm run build            # Build packages + apps for production
-npm run build:packages   # Build all packages in dependency order
-npm run build:apps       # Build apps only (requires packages built first)
-npm run typecheck        # TypeScript project references check (tsc -b)
+npm run build            # Build all packages + apps (parallel via Turborepo)
+npm run build:packages   # Build only packages
+npm run build:apps       # Build only apps and tools
+npm run typecheck        # TypeScript project references check
 
 # Testing
 npm run test             # Run all Jest tests
 npm run test:unit        # Run unit tests only
 npm run test:watch       # Run tests in watch mode
-npm run e2e              # Run Playwright e2e tests (starts dev server automatically)
+npm run e2e              # Run Playwright e2e tests
+
+# Linting and Formatting
+npm run lint             # Run Biome linter on all workspaces
+npm run format           # Format all files with Biome
 
 # Single test file
 node --experimental-vm-modules node_modules/jest/bin/jest.js tests/unit/ground/systems.test.ts
 
-# Workspace-specific builds
-npm -w packages/gameplay run build
-npm -w apps/web run build
+# Turborepo-specific commands
+npx turbo run build --filter=packages/core  # Build only core + dependents
+npx turbo run build --force                 # Force rebuild ignoring cache
+rm -rf .turbo                               # Clear Turborepo cache
 ```
+
+**Build System Notes:**
+- Uses Turborepo for parallel builds with automatic dependency ordering
+- Build outputs cached in `.turbo/` directory (40-50% faster incremental builds)
+- TypeScript 5.9.3 hoisted to root level for consistency
 
 ## Architecture
 
@@ -70,9 +80,33 @@ npm -w apps/web run build
 - Components are defined with `defineComponent()` from bitecs using typed arrays
 - Systems iterate over entities via `defineQuery()` and run each frame
 - Input handlers return state objects that sync to ECS components
-- Deterministic generation: procgen uses seeds, avoid `Math.random()` in gameplay
 - Domain tags (`InSpaceDomain`, `InGroundDomain`) control which systems affect entities
 - `Persistent` component marks entities that survive mode transitions
+
+## Deterministic RNG
+
+All gameplay code uses seeded RNG for determinism and reproducibility:
+
+```typescript
+import { SeededRNG, seededRandom, seededRange, setGlobalSeed } from '@xwingz/core';
+
+// Global RNG (shared state)
+setGlobalSeed(42);                    // Set global seed
+const value = seededRandom();         // 0-1 range
+const range = seededRange(10, 100);   // Custom range
+
+// Per-instance RNG (isolated state)
+const rng = new SeededRNG(entityId);  // Use entity ID as seed
+rng.next();                           // 0-1 range
+rng.range(min, max);                  // Float in range
+rng.int(min, max);                    // Integer in range (inclusive)
+```
+
+**Rules:**
+- **NEVER** use `Math.random()` in gameplay code
+- Use entity IDs as seeds for per-entity variation
+- Visual-only effects (starfields, particles) can use fixed seeds
+- Procgen uses the seed system from `@xwingz/procgen`
 
 ## Coding Conventions
 

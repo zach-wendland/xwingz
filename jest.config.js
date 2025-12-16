@@ -7,7 +7,7 @@ export default {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@xwingz/core$': '<rootDir>/packages/core/src/index.ts',
-    '^@xwingz/physics$': '<rootDir>/packages/physics/src/index.ts',
+    '^@xwingz/physics$': '<rootDir>/tests/__mocks__/@xwingz/physics.ts',
     '^@xwingz/gameplay$': '<rootDir>/packages/gameplay/src/index.ts',
     '^@dimforge/rapier3d$': '<rootDir>/node_modules/@dimforge/rapier3d/rapier.js'
   },
@@ -17,6 +17,7 @@ export default {
       {
         useESM: true,
         tsconfig: {
+          target: 'ES2020',
           module: 'ESNext',
           moduleResolution: 'node',
           esModuleInterop: true,

@@ -30,11 +30,11 @@ npm -w apps/web run build
 
 **Monorepo Structure:**
 - `apps/web/` - Browser game client (Three.js + Vite)
-- `packages/` - Shared libraries with dependency order:
-  - `core` → `physics` → `render` → `data` → `procgen` → `gameplay` → `ui`
+- `packages/` - Shared libraries with build dependency order:
+  - `core` → `render` → `data` → `procgen` → `physics` → `gameplay` → `ui`
 - `tools/seed-inspector/` - Procgen debugging tool
 - `tests/unit/` - Jest unit tests
-- `tests/e2e/` - Playwright integration tests
+- `tests/e2e/` - Playwright e2e tests (SwiftShader for headless WebGL)
 
 **Core Technologies:**
 - **bitecs** - Entity Component System (ECS) for game state
@@ -42,21 +42,32 @@ npm -w apps/web run build
 - **Rapier.js** - Physics (via WASM, needs `vite-plugin-wasm`)
 - TypeScript ESM throughout (`"type": "module"`)
 
+**Game Modes (`apps/web/src/modes/`):**
+- `ConquestMode` - Real-time galactic conquest with strategic layer
+- `FlightMode` - Space combat (fighters, capital ships)
+- `GroundMode` - Infantry/Battlefront-style ground combat
+- `MapMode` - Galaxy map and fleet management
+
 **Gameplay Package (`packages/gameplay/`):**
 - `space/` - Space combat (ships, weapons, AI)
-  - `components.ts` - ECS components (Transform, Ship, LaserWeapon, Projectile, etc.)
+  - `capital-components.ts`, `capital-systems.ts` - Capital ship subsystems (shields, turrets, hangars)
+  - `components.ts` - Fighter/bomber ECS components
   - `systems.ts` - Per-frame systems (movement, combat, spawning)
-  - `input.ts` - Player input handling
 - `ground/` - Infantry combat (Battlefront-style)
-  - `components.ts` - Soldier, CharacterController, BlasterWeapon, CommandPost, etc.
+  - `components.ts` - Soldier, CharacterController, BlasterWeapon, CommandPost
   - `systems.ts` - Ground movement, capture points, AI state machine
-  - `input.ts` - Third-person controls with pointer lock
+- `conquest/` - Galactic conquest campaign
+  - `components.ts` - ConquestPlanet, ConquestFleet, GroundForce, BattlePending
+  - `systems.ts` - Fleet movement, resource generation, battle resolution
+- `transition/` - Space↔ground seamless transitions
 
 **Key Patterns:**
 - Components are defined with `defineComponent()` from bitecs using typed arrays
 - Systems iterate over entities via `defineQuery()` and run each frame
 - Input handlers return state objects that sync to ECS components
 - Deterministic generation: procgen uses seeds, avoid `Math.random()` in gameplay
+- Domain tags (`InSpaceDomain`, `InGroundDomain`) control which systems affect entities
+- `Persistent` component marks entities that survive mode transitions
 
 ## Coding Conventions
 

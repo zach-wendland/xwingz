@@ -11,6 +11,7 @@
 import * as THREE from "three";
 import { PLANETS, planetToSystem } from "@xwingz/data";
 import { CONQUEST_FACTION, CONQUEST_PHASE } from "@xwingz/gameplay";
+import { getPlanetTexture, clearPlanetTextureCache, createProceduralShip } from "@xwingz/render";
 import type { ModeHandler, ModeContext, ModeTransitionData } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
 import {
@@ -25,17 +26,17 @@ import {
 
 const GALAXY_SCALE = 1000;
 
-// Faction colors
+// Faction colors (Empire uses Imperial blue/gray per Star Wars canon)
 const FACTION_COLORS = {
   [CONQUEST_FACTION.NEUTRAL]: 0x888888,
   [CONQUEST_FACTION.REBEL]: 0xff6644,
-  [CONQUEST_FACTION.EMPIRE]: 0x44ff66
+  [CONQUEST_FACTION.EMPIRE]: 0x4488ff  // Imperial blue (green reserved for lasers)
 } as const;
 
 const FACTION_GLOW = {
   [CONQUEST_FACTION.NEUTRAL]: 0x444444,
   [CONQUEST_FACTION.REBEL]: 0xff2200,
-  [CONQUEST_FACTION.EMPIRE]: 0x00ff44
+  [CONQUEST_FACTION.EMPIRE]: 0x2266ff  // Imperial blue glow
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,6 +192,9 @@ export class ConquestMode implements ModeHandler {
       this.simulation = null;
     }
 
+    // Clear planet texture cache
+    clearPlanetTextureCache();
+
     this.selectedPlanetIndex = -1;
     this.hoveredPlanetIndex = -1;
   }
@@ -290,14 +294,22 @@ export class ConquestMode implements ModeHandler {
     group.position.set(pos[0] * scale, 0, pos[1] * scale);
     group.userData.planetIndex = planet.planetIndex;
 
-    // Planet sphere
+    // Get procedural planet texture
+    const planetTexture = getPlanetTexture(
+      planet.planetDef.style as any,
+      planet.planetDef.id,
+      256
+    );
+
+    // Planet sphere with textured material
     const planetGeo = new THREE.SphereGeometry(16, 32, 32);
     const planetMat = new THREE.MeshStandardMaterial({
-      color: this.getPlanetBaseColor(planet.planetDef.style),
-      roughness: 0.7,
-      metalness: 0.1,
-      emissive: FACTION_COLORS[planet.controller],
-      emissiveIntensity: 0.15
+      map: planetTexture,
+      emissive: 0xffffff,
+      emissiveMap: planetTexture,
+      emissiveIntensity: 0.8,
+      roughness: 0.8,
+      metalness: 0.1
     });
     const planetMesh = new THREE.Mesh(planetGeo, planetMat);
     planetMesh.name = "planet";
@@ -335,21 +347,6 @@ export class ConquestMode implements ModeHandler {
     group.add(label);
 
     return group;
-  }
-
-  private getPlanetBaseColor(style: string): number {
-    const styles: Record<string, number> = {
-      desert: 0xe8c080,
-      ice: 0xc8e0ff,
-      jungle: 0x4a9860,
-      ocean: 0x3070d0,
-      volcanic: 0x8b3830,
-      city: 0x8898a8,
-      gas: 0xa080e0,
-      barren: 0x8a7868,
-      mystic: 0x6040a0
-    };
-    return styles[style] ?? 0x888888;
   }
 
   private createTextSprite(text: string): THREE.Sprite {
@@ -521,33 +518,45 @@ export class ConquestMode implements ModeHandler {
   private createFleetMesh(fleet: GalaxyFleetState): THREE.Group {
     const group = new THREE.Group();
 
-    // Simple triangle for fleet
-    const shape = new THREE.Shape();
-    shape.moveTo(0, 8);
-    shape.lineTo(-5, -5);
-    shape.lineTo(5, -5);
-    shape.closePath();
+    // Use faction-appropriate ship models for visual variety
+    const isRebel = fleet.faction === CONQUEST_FACTION.REBEL;
 
-    const geometry = new THREE.ShapeGeometry(shape);
-    const material = new THREE.MeshBasicMaterial({
-      color: FACTION_COLORS[fleet.faction],
-      side: THREE.DoubleSide
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.rotation.x = -Math.PI / 2;
-    group.add(mesh);
+    // Create a small representative ship (scales down for strategic view)
+    if (fleet.capitalShips > 0) {
+      // Capital fleet - show a mini star destroyer or nebulon-b
+      const capShip = createProceduralShip({
+        type: isRebel ? "nebulon_b" : "star_destroyer",
+        scale: 0.15, // Very small for strategic map
+        enableShadows: false
+      });
+      capShip.position.y = 8;
+      group.add(capShip);
+    } else {
+      // Fighter fleet - show mini fighters
+      const fighterType = isRebel ? "xwing" : "tie_ln";
+      for (let i = 0; i < Math.min(fleet.fighterSquadrons, 3); i++) {
+        const fighter = createProceduralShip({
+          type: fighterType,
+          scale: 0.3,
+          enableShadows: false
+        });
+        fighter.position.set((i - 1) * 6, 8, 0);
+        fighter.rotation.x = Math.PI / 6; // Angle upward slightly
+        group.add(fighter);
+      }
+    }
 
-    // Glow effect
+    // Glow effect underneath to show faction and make visible from far
     const glowGeo = new THREE.CircleGeometry(12, 16);
     const glowMat = new THREE.MeshBasicMaterial({
       color: FACTION_GLOW[fleet.faction],
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.4,
       blending: THREE.AdditiveBlending
     });
     const glow = new THREE.Mesh(glowGeo, glowMat);
     glow.rotation.x = -Math.PI / 2;
-    glow.position.y = -1;
+    glow.position.y = 2;
     group.add(glow);
 
     return group;

@@ -44,6 +44,7 @@ import type {
 import { isGroundFromFlightTransition } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
 import { ExplosionManager } from "../rendering/effects";
+import { createProceduralShip } from "@xwingz/render";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ground Mode State
@@ -622,52 +623,29 @@ export class GroundMode implements ModeHandler {
   }
 
   private buildLandedShipMesh(): THREE.Object3D {
-    // Simple X-Wing representation when landed
-    const group = new THREE.Group();
+    // Use the centralized ship model system for the landed X-Wing
+    const xwing = createProceduralShip({ type: "xwing", scale: 1.0, enableShadows: true });
 
-    // Fuselage
-    const fuselageGeo = new THREE.BoxGeometry(2, 1.5, 8);
-    const fuselageMat = new THREE.MeshStandardMaterial({ color: 0xe8f0ff, metalness: 0.3, roughness: 0.5 });
-    const fuselage = new THREE.Mesh(fuselageGeo, fuselageMat);
-    fuselage.position.y = 1.5;
-    fuselage.castShadow = true;
-    group.add(fuselage);
-
-    // Wings (closed position when landed)
-    const wingGeo = new THREE.BoxGeometry(10, 0.15, 2.5);
-    const wingMat = new THREE.MeshStandardMaterial({ color: 0x2b2f3a, metalness: 0.2, roughness: 0.7 });
-    const wing = new THREE.Mesh(wingGeo, wingMat);
-    wing.position.y = 1.5;
-    wing.castShadow = true;
-    group.add(wing);
-
-    // Landing gear (simple cylinders)
+    // Add landing gear (not included in flight model)
     const gearGeo = new THREE.CylinderGeometry(0.15, 0.2, 1.2, 8);
     const gearMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.6 });
+
     const frontGear = new THREE.Mesh(gearGeo, gearMat);
-    frontGear.position.set(0, 0.6, -2.5);
-    group.add(frontGear);
+    frontGear.position.set(0, -1.2, -2.5);
+    xwing.add(frontGear);
+
     const leftGear = new THREE.Mesh(gearGeo, gearMat);
-    leftGear.position.set(-2, 0.6, 2);
-    group.add(leftGear);
+    leftGear.position.set(-2, -1.2, 2);
+    xwing.add(leftGear);
+
     const rightGear = new THREE.Mesh(gearGeo, gearMat);
-    rightGear.position.set(2, 0.6, 2);
-    group.add(rightGear);
+    rightGear.position.set(2, -1.2, 2);
+    xwing.add(rightGear);
 
-    // Cockpit
-    const cockpitGeo = new THREE.SphereGeometry(0.8, 12, 12);
-    const cockpitMat = new THREE.MeshStandardMaterial({
-      color: 0x0c0f18,
-      roughness: 0.1,
-      transparent: true,
-      opacity: 0.6
-    });
-    const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
-    cockpit.position.set(0, 2.0, -1.5);
-    cockpit.scale.set(1.2, 0.8, 1.5);
-    group.add(cockpit);
+    // Position ship above ground (accounting for landing gear)
+    xwing.position.y = 1.5;
 
-    return group;
+    return xwing;
   }
 
   private buildCommandPostMesh(ownerTeam: number): THREE.Object3D {

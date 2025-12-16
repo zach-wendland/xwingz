@@ -7,7 +7,7 @@ import "./style.css";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createGame } from "@xwingz/core";
 import { createBasicRenderer } from "@xwingz/render";
-import { PLANETS } from "@xwingz/data";
+import { PLANETS, planetToSystem } from "@xwingz/data";
 import { deriveSeed, type SystemDef } from "@xwingz/procgen";
 
 import { loadProfile, saveProfile, scheduleSave, type Profile } from "./state/ProfileManager";
@@ -194,6 +194,14 @@ try {
     },
     enterConquest() {
       requestModeChange("conquest", { type: "conquest" });
+    },
+    // Quick access to Star Destroyer mission
+    enterStarDestroyer() {
+      const coruscant = PLANETS.find(p => p.id === "coruscant");
+      if (coruscant) {
+        const system = planetToSystem(coruscant);
+        requestModeChange("flight", { type: "flight", system, scenario: "destroy_star_destroyer" });
+      }
     },
     // Conquest test helpers
     CONQUEST_FACTION,

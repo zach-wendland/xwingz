@@ -5,7 +5,7 @@
 
 import * as THREE from "three";
 import { addComponent, addEntity, removeEntity, hasComponent, defineQuery } from "bitecs";
-import { AssetLoader, KENNEY_ASSETS } from "@xwingz/render";
+import { AssetLoader, KENNEY_ASSETS, createProceduralShip, type ShipType } from "@xwingz/render";
 import {
   createRng,
   deriveSeed,
@@ -946,322 +946,32 @@ export class FlightMode implements ModeHandler {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Ship/Entity Building
+  // Ship/Entity Building (using centralized ShipModels)
   // ───────────────────────────────────────────────────────────────────────────
 
-  private buildShipMesh(): THREE.Group {
-    const group = new THREE.Group();
-
-    const hullMat = new THREE.MeshStandardMaterial({ color: 0xe8f0ff, metalness: 0.25, roughness: 0.5 });
-    const darkMat = new THREE.MeshStandardMaterial({ color: 0x171a25, metalness: 0.2, roughness: 0.85 });
-    const redMat = new THREE.MeshStandardMaterial({ color: 0xb02a2a, roughness: 0.7 });
-    const engineMat = new THREE.MeshStandardMaterial({ color: 0x9aa3b8, metalness: 0.35, roughness: 0.5 });
-    const gunMat = new THREE.MeshStandardMaterial({ color: 0x2b2f3a, metalness: 0.45, roughness: 0.45 });
-    const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x0c0f18,
-      roughness: 0.1,
-      metalness: 0.0,
-      transparent: true,
-      opacity: 0.6
-    });
-    const nozzleMat = new THREE.MeshStandardMaterial({
-      color: 0x44bbff,
-      emissive: 0x44ccff,
-      emissiveIntensity: 6.0,
-      roughness: 0.15
-    });
-
-    // Fuselage
-    const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.1, 10.8, 12), hullMat);
-    fuselage.rotation.x = Math.PI / 2;
-    fuselage.castShadow = true;
-    group.add(fuselage);
-
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.9, 3.8, 12), hullMat);
-    nose.position.z = -7.2;
-    nose.rotation.x = Math.PI;
-    nose.castShadow = true;
-    group.add(nose);
-
-    const intake = new THREE.Mesh(new THREE.BoxGeometry(1.35, 1.05, 2.4), darkMat);
-    intake.position.set(0, -0.1, -1.0);
-    intake.castShadow = true;
-    group.add(intake);
-
-    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.95, 12, 12), glassMat);
-    canopy.position.set(0, 0.55, -2.0);
-    canopy.scale.set(1.1, 0.75, 1.35);
-    canopy.castShadow = true;
-    group.add(canopy);
-
-    // Astromech dome
-    const droid = new THREE.Group();
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 10), hullMat);
-    dome.position.y = 0.2;
-    dome.castShadow = true;
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.22, 10), hullMat);
-    cap.castShadow = true;
-    droid.add(cap, dome);
-    droid.position.set(0.75, 0.45, 0.9);
-    group.add(droid);
-
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.08, 0.8), redMat);
-    stripe.position.set(-1.95, 0.2, -1.0);
-    stripe.castShadow = true;
-    group.add(stripe);
-
-    // S-foils
-    const wingAngle = 0.52;
-    const wingGeo = new THREE.BoxGeometry(7.8, 0.14, 1.9);
-    const engineGeo = new THREE.CylinderGeometry(0.44, 0.44, 3.4, 10);
-    const nozzleGeo = new THREE.CylinderGeometry(0.26, 0.32, 0.42, 10);
-    const cannonGeo = new THREE.CylinderGeometry(0.09, 0.09, 3.6, 8);
-
-    const makeWing = (side: -1 | 1, up: -1 | 1) => {
-      const w = new THREE.Group();
-      w.rotation.z = up * wingAngle;
-
-      const wing = new THREE.Mesh(wingGeo, darkMat);
-      wing.position.set(side * 4.0, 0, -1.2);
-      wing.castShadow = true;
-      w.add(wing);
-
-      const engine = new THREE.Mesh(engineGeo, engineMat);
-      engine.rotation.x = Math.PI / 2;
-      engine.position.set(side * 6.55, 0, 0.2);
-      engine.castShadow = true;
-      w.add(engine);
-
-      const nozzle = new THREE.Mesh(nozzleGeo, nozzleMat);
-      nozzle.rotation.x = Math.PI / 2;
-      nozzle.position.set(side * 6.55, 0, 1.95);
-      w.add(nozzle);
-
-      const glow = makeBoltGlow(0x66aaff);
-      glow.position.set(side * 6.55, 0, 2.25);
-      glow.scale.setScalar(4.4);
-      w.add(glow);
-
-      const cannon = new THREE.Mesh(cannonGeo, gunMat);
-      cannon.rotation.x = Math.PI / 2;
-      cannon.position.set(side * 7.15, 0, -5.25);
-      cannon.castShadow = true;
-      w.add(cannon);
-
-      return w;
+  private buildEnemyMesh(id: string): THREE.Object3D {
+    // Map archetype IDs to ShipType
+    const shipTypeMap: Record<string, ShipType> = {
+      "tie_ln": "tie_ln",
+      "tie_fighter": "tie_fighter",
+      "tie_interceptor": "tie_interceptor",
+      "xwing": "xwing",
+      "ywing": "ywing",
+      "awing": "awing",
     };
 
-    group.add(makeWing(1, 1), makeWing(-1, 1), makeWing(1, -1), makeWing(-1, -1));
-
-    return group;
-  }
-
-  private buildEnemyMesh(id: string): THREE.Object3D {
-    if (id === "tie_ln") {
-      const group = new THREE.Group();
-      const cockpit = new THREE.Mesh(
-        new THREE.SphereGeometry(2.4, 12, 12),
-        new THREE.MeshStandardMaterial({ color: 0x2b2f3a, metalness: 0.25, roughness: 0.6 })
-      );
-      cockpit.castShadow = true;
-      group.add(cockpit);
-      const panelGeo = new THREE.BoxGeometry(0.6, 6.5, 6.5);
-      const panelMat = new THREE.MeshStandardMaterial({ color: 0x1a1c23, metalness: 0.2, roughness: 0.7 });
-      const left = new THREE.Mesh(panelGeo, panelMat);
-      left.position.x = -4.2;
-      left.castShadow = true;
-      const right = new THREE.Mesh(panelGeo, panelMat);
-      right.position.x = 4.2;
-      right.castShadow = true;
-
-      const strutGeo = new THREE.BoxGeometry(2.8, 0.35, 0.35);
-      const strutMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4c, metalness: 0.25, roughness: 0.6 });
-      const strut = new THREE.Mesh(strutGeo, strutMat);
-      strut.castShadow = true;
-
-      const glow = makeBoltGlow(0x66ff88);
-      glow.position.z = 3.0;
-      glow.scale.setScalar(5.2);
-
-      group.add(left, right, strut, glow);
-      return group;
-    }
-
-    const group = this.buildShipMesh();
-    group.traverse((c) => {
-      const mesh = c as THREE.Mesh;
-      if (mesh.material) {
-        (mesh.material as THREE.MeshStandardMaterial).color.setHex(0x8a8f9d);
-      }
-    });
-    group.scale.setScalar(0.8);
-    return group;
+    const shipType = shipTypeMap[id] ?? "tie_ln";
+    return createProceduralShip({ type: shipType, enableShadows: true });
   }
 
   private buildAllyMesh(slot = 0): THREE.Group {
-    const group = this.buildShipMesh();
     const tint = slot % 3 === 0 ? 0x9bb7ff : slot % 3 === 1 ? 0xbfffd0 : 0xffd29b;
-    group.traverse((c) => {
-      const mesh = c as THREE.Mesh;
-      if (!mesh.material) return;
-      const mat = mesh.material as THREE.MeshStandardMaterial;
-      mat.color.lerp(new THREE.Color(tint), 0.12);
-    });
-    return group;
+    return createProceduralShip({ type: "xwing", tint, enableShadows: true });
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Capital Ship Meshes
+  // Capital Ship Meshes (Star Destroyer uses centralized ShipModels)
   // ───────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Build procedural Imperial Star Destroyer mesh.
-   * Scale: ~80 units length (1600m / 20 scale factor)
-   */
-  private buildStarDestroyerMesh(): THREE.Group {
-    const group = new THREE.Group();
-
-    // Materials
-    const hullMat = new THREE.MeshStandardMaterial({
-      color: 0x8a8f9d,
-      metalness: 0.3,
-      roughness: 0.7
-    });
-    const darkMat = new THREE.MeshStandardMaterial({
-      color: 0x2a2d36,
-      metalness: 0.2,
-      roughness: 0.8
-    });
-    const bridgeMat = new THREE.MeshStandardMaterial({
-      color: 0x3a3f4c,
-      metalness: 0.35,
-      roughness: 0.6
-    });
-    const windowMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      emissive: 0xffffcc,
-      emissiveIntensity: 0.8
-    });
-    const engineMat = new THREE.MeshStandardMaterial({
-      color: 0x4488ff,
-      emissive: 0x4488ff,
-      emissiveIntensity: 2.0
-    });
-
-    // Main wedge hull (elongated pyramid/wedge shape)
-    // Using BufferGeometry for custom wedge
-    const hullGeo = new THREE.BufferGeometry();
-    const hw = 30;  // half width at back
-    const hh = 8;   // half height
-    const len = 80; // length
-
-    // Wedge vertices (front point, back rectangle)
-    const vertices = new Float32Array([
-      // Front point (nose)
-      0, 0, -len / 2,
-      // Back top-left
-      -hw, hh, len / 2,
-      // Back top-right
-      hw, hh, len / 2,
-      // Back bottom-left
-      -hw, -hh / 2, len / 2,
-      // Back bottom-right
-      hw, -hh / 2, len / 2,
-    ]);
-
-    const indices = new Uint16Array([
-      // Top face
-      0, 1, 2,
-      // Bottom face
-      0, 4, 3,
-      // Left face
-      0, 3, 1,
-      // Right face
-      0, 2, 4,
-      // Back face
-      1, 3, 4, 1, 4, 2
-    ]);
-
-    hullGeo.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
-    hullGeo.setIndex(new THREE.BufferAttribute(indices, 1));
-    hullGeo.computeVertexNormals();
-
-    const mainHull = new THREE.Mesh(hullGeo, hullMat);
-    mainHull.castShadow = true;
-    group.add(mainHull);
-
-    // Bridge tower (iconic superstructure)
-    const bridgeBase = new THREE.Mesh(
-      new THREE.BoxGeometry(12, 12, 8),
-      bridgeMat
-    );
-    bridgeBase.position.set(0, 12, 20);
-    bridgeBase.castShadow = true;
-    group.add(bridgeBase);
-
-    const bridgeTop = new THREE.Mesh(
-      new THREE.BoxGeometry(8, 6, 6),
-      bridgeMat
-    );
-    bridgeTop.position.set(0, 20, 20);
-    bridgeTop.castShadow = true;
-    group.add(bridgeTop);
-
-    // Shield generator domes (on bridge)
-    const domeGeo = new THREE.SphereGeometry(2, 8, 8);
-    const leftDome = new THREE.Mesh(domeGeo, darkMat);
-    leftDome.position.set(-5, 24, 20);
-    leftDome.castShadow = true;
-    group.add(leftDome);
-
-    const rightDome = new THREE.Mesh(domeGeo, darkMat);
-    rightDome.position.set(5, 24, 20);
-    rightDome.castShadow = true;
-    group.add(rightDome);
-
-    // Engine array (3 main engines at back)
-    const engineGeo = new THREE.CylinderGeometry(3, 3.5, 6, 8);
-    const glowGeo = new THREE.CircleGeometry(2.8, 12);
-
-    for (let i = -1; i <= 1; i++) {
-      const engine = new THREE.Mesh(engineGeo, darkMat);
-      engine.rotation.x = Math.PI / 2;
-      engine.position.set(i * 10, 0, len / 2 + 3);
-      engine.castShadow = true;
-      group.add(engine);
-
-      const glow = new THREE.Mesh(glowGeo, engineMat);
-      glow.position.set(i * 10, 0, len / 2 + 6);
-      group.add(glow);
-    }
-
-    // Surface greebles (trench detail lines)
-    const trenchGeo = new THREE.BoxGeometry(0.5, 0.3, 40);
-    for (let i = -3; i <= 3; i++) {
-      if (i === 0) continue;
-      const trench = new THREE.Mesh(trenchGeo, darkMat);
-      trench.position.set(i * 6, hh + 0.15, 0);
-      group.add(trench);
-    }
-
-    // Window lights along the hull
-    const windowGeo = new THREE.BoxGeometry(0.3, 0.15, 0.15);
-    for (let z = -30; z <= 30; z += 5) {
-      for (let x = -20; x <= 20; x += 8) {
-        // Calculate Y based on wedge shape
-        const t = (z + len / 2) / len;
-        const maxX = hw * t;
-        if (Math.abs(x) > maxX - 2) continue;
-        const y = hh * t + 0.2;
-
-        const win = new THREE.Mesh(windowGeo, windowMat);
-        win.position.set(x, y, z);
-        group.add(win);
-      }
-    }
-
-    return group;
-  }
 
   /**
    * Build a turret mesh for capital ships.
@@ -1392,12 +1102,8 @@ export class FlightMode implements ModeHandler {
 
     this.shipEid = spawnPlayerShip(ctx.world);
     this.applyUpgradesToPlayer(ctx, true);
-    this.shipMesh = this.buildShipMesh();
-    this.shipMesh.scale.setScalar(2.5);
-    this.shipMesh.traverse((c) => {
-      c.castShadow = true;
-      c.receiveShadow = false;
-    });
+    // Use the centralized ship model system
+    this.shipMesh = createProceduralShip({ type: "xwing_player", enableShadows: true });
     ctx.scene.add(this.shipMesh);
     this.camInit = false;
     this.lockValue = 0;
@@ -1881,8 +1587,9 @@ export class FlightMode implements ModeHandler {
     }
     this.targetMeshes.clear();
 
-    // Spawn the Star Destroyer at a distance (team 1 = enemy)
-    const sdResult = this.spawnStarDestroyer(ctx, 0, 0, -1000, 1);
+    // Spawn the Star Destroyer at a visible distance (team 1 = enemy)
+    // Positioned at -600 so it's visible (now 5x scaled = ~400 units long)
+    const sdResult = this.spawnStarDestroyer(ctx, 0, 80, -600, 1);
 
     // Initialize mission state
     this.starDestroyerMission = {
@@ -1901,15 +1608,16 @@ export class FlightMode implements ModeHandler {
     // Spawn TIE fighter escort
     this.spawnStarDestroyerEscort(ctx, system.seed, this.starDestroyerMission.tieFighterCount);
 
-    // Position player
+    // Position player facing the Star Destroyer
     if (this.shipEid !== null) {
       Transform.x[this.shipEid] = 0;
-      Transform.y[this.shipEid] = 0;
-      Transform.z[this.shipEid] = 200;
+      Transform.y[this.shipEid] = 80; // Same height as SD
+      Transform.z[this.shipEid] = 400; // Safe distance in front
+      // Rotate 180° around Y to face -Z (toward the Star Destroyer)
       Transform.qx[this.shipEid] = 0;
-      Transform.qy[this.shipEid] = 0;
+      Transform.qy[this.shipEid] = 1; // 180° Y rotation
       Transform.qz[this.shipEid] = 0;
-      Transform.qw[this.shipEid] = 1;
+      Transform.qw[this.shipEid] = 0;
       Velocity.vx[this.shipEid] = 0;
       Velocity.vy[this.shipEid] = 0;
       Velocity.vz[this.shipEid] = 0;
@@ -1928,10 +1636,10 @@ export class FlightMode implements ModeHandler {
     for (let i = 0; i < count; i++) {
       const archetype = getFighterArchetype("tie_ln");
       const angle = (i / count) * Math.PI * 2;
-      const radius = 150 + rng.range(0, 100);
+      const radius = 100 + rng.range(0, 80);
       const x = Math.cos(angle) * radius;
-      const z = -800 + Math.sin(angle) * radius;
-      const y = rng.range(-40, 40);
+      const z = -100 + Math.sin(angle) * 50; // Between player (400) and SD (-600)
+      const y = 80 + rng.range(-30, 30); // Near SD height
 
       const eid = addEntity(ctx.world);
       addComponent(ctx.world, Transform, eid);
@@ -2281,8 +1989,8 @@ export class FlightMode implements ModeHandler {
       z
     });
 
-    // Create mesh
-    const mesh = this.buildStarDestroyerMesh();
+    // Create mesh using centralized ship model system
+    const mesh = createProceduralShip({ type: "star_destroyer", scale: 5.0, enableShadows: true });
     mesh.position.set(x, y, z);
     ctx.scene.add(mesh);
     this.capitalShipMeshes.set(result.shipEid, mesh);

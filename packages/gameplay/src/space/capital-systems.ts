@@ -444,21 +444,21 @@ function getWeakPointLayout(shipClass: ShipClass): Array<{ offsetX: number; offs
 
 function getTurretDamage(type: TurretType): number {
   switch (type) {
-    case TurretType.PointDefense: return 8;
-    case TurretType.Medium: return 15;
-    case TurretType.Heavy: return 40;
-    case TurretType.Ion: return 25; // bonus vs shields
-    default: return 10;
+    case TurretType.PointDefense: return 3;  // Reduced from 8
+    case TurretType.Medium: return 6;        // Reduced from 15
+    case TurretType.Heavy: return 15;        // Reduced from 40
+    case TurretType.Ion: return 10;          // Reduced from 25
+    default: return 5;
   }
 }
 
 function getTurretCooldown(type: TurretType): number {
   switch (type) {
-    case TurretType.PointDefense: return 0.15;
-    case TurretType.Medium: return 0.4;
-    case TurretType.Heavy: return 1.2;
-    case TurretType.Ion: return 0.8;
-    default: return 0.5;
+    case TurretType.PointDefense: return 0.4;  // Slower (was 0.15)
+    case TurretType.Medium: return 0.8;        // Slower (was 0.4)
+    case TurretType.Heavy: return 2.0;         // Slower (was 1.2)
+    case TurretType.Ion: return 1.5;           // Slower (was 0.8)
+    default: return 1.0;
   }
 }
 

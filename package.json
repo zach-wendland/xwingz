@@ -2,29 +2,32 @@
   "name": "xwingz",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "npm@11.6.2",
   "workspaces": [
     "apps/*",
     "packages/*",
     "tools/*"
   ],
   "scripts": {
-    "dev": "npm --workspace apps/web run dev",
-    "build:packages": "npm --workspace packages/core run build && npm --workspace packages/render run build && npm --workspace packages/data run build && npm --workspace packages/procgen run build && npm --workspace packages/physics run build && npm --workspace packages/gameplay run build && npm --workspace packages/ui run build",
-    "build:apps": "npm --workspace apps/web run build && npm --workspace tools/seed-inspector run build",
-    "build": "npm run build:packages && npm run build:apps",
+    "dev": "turbo run dev --filter=apps/web",
+    "build": "turbo run build",
+    "build:packages": "turbo run build --filter='./packages/*'",
+    "build:apps": "turbo run build --filter='./apps/*' --filter='./tools/*'",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPatterns=tests/unit",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
-    "lint": "npm --workspaces run lint",
-    "format": "npm --workspaces run format",
-    "typecheck": "tsc -b",
+    "lint": "turbo run lint",
+    "format": "turbo run format",
+    "typecheck": "turbo run typecheck",
     "e2e": "playwright test"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "@playwright/test": "^1.57.0",
     "@types/jest": "^30.0.0",
     "jest": "^30.2.0",
     "ts-jest": "^29.4.6",
-    "typescript": "^5.7.2"
+    "turbo": "^2.3.3",
+    "typescript": "^5.9.3"
   }
 }

@@ -14,8 +14,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "echo \"no tests yet\"",
-    "lint": "echo \"no lint yet\"",
-    "format": "echo \"no format yet\""
+    "lint": "biome check .",
+    "format": "biome format --write ."
   },
   "dependencies": {
     "@xwingz/core": "file:../core"

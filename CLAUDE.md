@@ -48,6 +48,11 @@ npm -w apps/web run build
 - `GroundMode` - Infantry/Battlefront-style ground combat
 - `MapMode` - Galaxy map and fleet management
 
+**Render Package (`packages/render/`):**
+- `ShipModels.ts` - Unified ship mesh system with 12 procedural ship types (X-Wing, TIE Fighter, TIE Interceptor, Y-Wing, A-Wing, Star Destroyer, Nebulon-B, CR90, Transport, Shuttle)
+- `AssetLoader.ts` - GLTF/GLB loading with caching, Kenney Space Kit integration
+- `PlanetTextures.ts` - Procedural planet texture generator (9 Star Wars planet styles)
+
 **Gameplay Package (`packages/gameplay/`):**
 - `space/` - Space combat (ships, weapons, AI)
   - `capital-components.ts`, `capital-systems.ts` - Capital ship subsystems (shields, turrets, hangars)
@@ -75,3 +80,11 @@ npm -w apps/web run build
 - Prefer `const`, small pure functions, explicit types at module boundaries
 - Avoid allocations in per-frame loops (reuse objects/arrays)
 - Commit messages: milestone prefix convention (`Step 5.1: ...`, `Phase C: ...`)
+
+## Star Wars Visual Canon
+
+When creating ship visuals:
+- TIE engine glow: blue (`0x4488ff`), NOT green - TIE ions glow blue in films
+- Empire faction UI colors: Imperial blue/gray (`0x4488ff`), NOT green - green is for lasers only
+- Rebel faction: orange/red tones (`0xff6644`)
+- Neutral/contested: gray (`0x888888`)

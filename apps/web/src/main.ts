@@ -120,6 +120,11 @@ window.addEventListener("beforeunload", () => saveProfile(profile));
 // ─────────────────────────────────────────────────────────────────────────────
 
 const e2eEnabled = (() => {
+  // Only allow E2E helpers in development or test mode
+  if (import.meta.env.MODE !== 'development' && import.meta.env.MODE !== 'test') {
+    return false;
+  }
+
   try {
     return new URLSearchParams(window.location.search).has("e2e");
   } catch {

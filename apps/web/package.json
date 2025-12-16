@@ -6,8 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:test": "vite build --mode test",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write ."
   },
   "dependencies": {
     "@xwingz/core": "file:../../packages/core",
@@ -18,7 +21,6 @@
     "three": "^0.161.0"
   },
   "devDependencies": {
-    "typescript": "~5.9.3",
     "vite": "^7.2.4",
     "vite-plugin-wasm": "^3.5.0",
     "vite-plugin-top-level-await": "^1.4.4"

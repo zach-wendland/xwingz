@@ -11,6 +11,7 @@
 import * as THREE from "three";
 import { PLANETS, planetToSystem } from "@xwingz/data";
 import { CONQUEST_FACTION, CONQUEST_PHASE } from "@xwingz/gameplay";
+import { SeededRNG } from "@xwingz/core";
 import { getPlanetTexture, clearPlanetTextureCache, createProceduralShip } from "@xwingz/render";
 import type { ModeHandler, ModeContext, ModeTransitionData } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
@@ -227,20 +228,22 @@ export class ConquestMode implements ModeHandler {
     const count = 4000;
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
+    // Use fixed seed for deterministic starfield
+    const rng = new SeededRNG(42);
 
     for (let i = 0; i < count; i++) {
-      const r = 3000 + Math.random() * 12000;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(Math.random() * 2 - 1);
+      const r = 3000 + rng.next() * 12000;
+      const theta = rng.next() * Math.PI * 2;
+      const phi = Math.acos(rng.next() * 2 - 1);
 
       positions[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
       positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
       positions[i * 3 + 2] = r * Math.cos(phi);
 
       // Color variation - blue/white stars
-      const brightness = 0.6 + Math.random() * 0.4;
-      colors[i * 3 + 0] = brightness * (0.8 + Math.random() * 0.2);
-      colors[i * 3 + 1] = brightness * (0.85 + Math.random() * 0.15);
+      const brightness = 0.6 + rng.next() * 0.4;
+      colors[i * 3 + 0] = brightness * (0.8 + rng.next() * 0.2);
+      colors[i * 3 + 1] = brightness * (0.85 + rng.next() * 0.15);
       colors[i * 3 + 2] = brightness;
     }
 

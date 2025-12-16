@@ -19,6 +19,7 @@ import {
   TurretType,
 } from "./capital-components";
 import { SpatialHash } from "@xwingz/physics";
+import { SeededRNG } from "@xwingz/core";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EVENTS
@@ -231,13 +232,15 @@ function spawnTurret(world: IWorld, parentEid: number, cfg: TurretConfig, team: 
   Turret.pitchMax[eid] = cfg.pitchMax ?? 1.05;  // 60 deg
   Turret.rotationSpeed[eid] = getTurretRotationSpeed(cfg.type);
   Turret.cooldown[eid] = cfg.cooldown ?? getTurretCooldown(cfg.type);
-  Turret.cooldownRemaining[eid] = Math.random() * Turret.cooldown[eid]; // Stagger
+  // Use entity ID as seed for deterministic stagger
+  const turretRng = new SeededRNG(eid);
+  Turret.cooldownRemaining[eid] = turretRng.next() * Turret.cooldown[eid]; // Stagger
   Turret.damage[eid] = cfg.damage ?? getTurretDamage(cfg.type);
   Turret.range[eid] = cfg.range ?? getTurretRange(cfg.type);
   Turret.projectileSpeed[eid] = getTurretProjectileSpeed(cfg.type);
   Turret.targetEid[eid] = -1;
   Turret.targetPriority[eid] = cfg.type === TurretType.PointDefense ? 1 : 0;
-  Turret.trackingAccuracy[eid] = 0.7 + Math.random() * 0.2;
+  Turret.trackingAccuracy[eid] = 0.7 + turretRng.next() * 0.2;
   Turret.disabled[eid] = 0;
 
   Team.id[eid] = team;
@@ -893,12 +896,13 @@ export function turretFireSystem(world: IWorld, dt: number): void {
 
     tmpForward.set(0, 0, -1).applyQuaternion(tmpQ);
 
-    // Add accuracy scatter
+    // Add accuracy scatter (seeded by turret ID for determinism)
     const accuracy = Turret.trackingAccuracy[tid] ?? 0.8;
     const scatter = (1 - accuracy) * 0.1;
-    tmpForward.x += (Math.random() - 0.5) * scatter;
-    tmpForward.y += (Math.random() - 0.5) * scatter;
-    tmpForward.z += (Math.random() - 0.5) * scatter;
+    const scatterRng = new SeededRNG(tid * 10000 + (Turret.cooldownRemaining[tid] | 0));
+    tmpForward.x += (scatterRng.next() - 0.5) * scatter;
+    tmpForward.y += (scatterRng.next() - 0.5) * scatter;
+    tmpForward.z += (scatterRng.next() - 0.5) * scatter;
     tmpForward.normalize();
 
     const speed = Turret.projectileSpeed[tid] ?? 500;

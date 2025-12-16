@@ -5,6 +5,7 @@
 
 import * as THREE from "three";
 import { addComponent, addEntity, removeEntity, hasComponent, defineQuery } from "bitecs";
+import { AssetLoader, KENNEY_ASSETS } from "@xwingz/render";
 import {
   createRng,
   deriveSeed,
@@ -228,6 +229,10 @@ export class FlightMode implements ModeHandler {
   private subsystemMeshes = new Map<number, THREE.Object3D>();
   private turretProjectileMeshes = new Map<number, THREE.Mesh>();
 
+  // Asset loading
+  private assetLoader = new AssetLoader({ basePath: '/assets/models/' });
+  private assetsReady = false;
+
   // Targeting / lock
   private lockValue = 0;
   private lockTargetEid = -1;
@@ -325,6 +330,18 @@ export class FlightMode implements ModeHandler {
     // Clear scene
     this.clearPlanetaryScene(ctx);
     ctx.scene.clear();
+
+    // Preload 3D assets (async, will be ready for capital ship spawning)
+    this.assetsReady = false;
+    this.assetLoader.preload([
+      KENNEY_ASSETS.TURRET_SINGLE,
+      KENNEY_ASSETS.TURRET_DOUBLE,
+    ]).then(() => {
+      this.assetsReady = true;
+      console.log('[FlightMode] Turret assets loaded');
+    }).catch(err => {
+      console.warn('[FlightMode] Failed to load turret assets, using procedural:', err);
+    });
 
     // Setup lighting
     ctx.scene.add(new THREE.AmbientLight(0xffffff, 0.9));
@@ -1248,8 +1265,35 @@ export class FlightMode implements ModeHandler {
 
   /**
    * Build a turret mesh for capital ships.
+   * Uses loaded GLB models when available, falls back to procedural geometry.
    */
   private buildTurretMesh(turretType: number): THREE.Group {
+    // Scale based on turret type
+    const scale = turretType === TurretType.Heavy ? 1.5 :
+                  turretType === TurretType.Medium ? 1.0 : 0.6;
+
+    // Use double turret for Medium/Heavy, single for PointDefense/Light
+    const useDoubleTurret = turretType === TurretType.Medium || turretType === TurretType.Heavy;
+    const assetKey = useDoubleTurret ? KENNEY_ASSETS.TURRET_DOUBLE : KENNEY_ASSETS.TURRET_SINGLE;
+
+    // Try to use loaded GLB model
+    if (this.assetsReady && this.assetLoader.isCached(assetKey)) {
+      const model = this.assetLoader.clone(assetKey);
+      // Scale to match game units (Kenney models are small, need scaling)
+      model.scale.setScalar(scale * 2.5);
+      // Rotate to face forward (adjust as needed for model orientation)
+      model.rotation.x = -Math.PI / 2;
+      return model;
+    }
+
+    // Fallback to procedural geometry
+    return this.buildProceduralTurretMesh(turretType, scale);
+  }
+
+  /**
+   * Procedural turret mesh (fallback when GLB not loaded).
+   */
+  private buildProceduralTurretMesh(turretType: number, scale: number): THREE.Group {
     const group = new THREE.Group();
 
     const baseMat = new THREE.MeshStandardMaterial({
@@ -1262,10 +1306,6 @@ export class FlightMode implements ModeHandler {
       metalness: 0.5,
       roughness: 0.5
     });
-
-    // Scale based on turret type
-    const scale = turretType === TurretType.Heavy ? 1.5 :
-                  turretType === TurretType.Medium ? 1.0 : 0.6;
 
     // Turret base
     const base = new THREE.Mesh(

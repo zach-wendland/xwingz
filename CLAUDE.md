@@ -39,12 +39,16 @@ rm -rf .turbo                               # Clear Turborepo cache
 ## Architecture
 
 **Monorepo Structure:**
-- `apps/web/` - Browser game client (Three.js + Vite)
+- `apps/web/` - Browser game client (Three.js + Vite), package name: `web`
 - `packages/` - Shared libraries with build dependency order:
-  - `core` → `render` → `data` → `procgen` → `physics` → `gameplay` → `ui`
+  - `core` → `data` → `render` → `procgen` → `physics` → `gameplay` → `ui`
 - `tools/seed-inspector/` - Procgen debugging tool
 - `tests/unit/` - Jest unit tests
 - `tests/e2e/` - Playwright e2e tests (SwiftShader for headless WebGL)
+
+**Turborepo Filter Syntax:**
+- Use package names, not paths: `--filter=web` (not `--filter=apps/web`)
+- Path filters require `./` prefix: `--filter=./packages/*`
 
 **Core Technologies:**
 - **bitecs** - Entity Component System (ECS) for game state
@@ -61,7 +65,7 @@ rm -rf .turbo                               # Clear Turborepo cache
 **Render Package (`packages/render/`):**
 - `ShipModels.ts` - Unified ship mesh system with 12 procedural ship types (X-Wing, TIE Fighter, TIE Interceptor, Y-Wing, A-Wing, Star Destroyer, Nebulon-B, CR90, Transport, Shuttle)
 - `AssetLoader.ts` - GLTF/GLB loading with caching, Kenney Space Kit integration
-- `PlanetTextures.ts` - Procedural planet texture generator (9 Star Wars planet styles)
+- `PlanetTextures.ts` - Procedural planet texture generator via `getPlanetTexture(style, id, size)` for 9 Star Wars planet styles (desert, ice, jungle, ocean, volcanic, city, gas, barren, mystic)
 
 **Gameplay Package (`packages/gameplay/`):**
 - `space/` - Space combat (ships, weapons, AI)

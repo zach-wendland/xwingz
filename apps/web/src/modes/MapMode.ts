@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { createRng, deriveSeed, getMission, type SystemDef } from "@xwingz/procgen";
 import { PLANETS, planetToSystem, type PlanetDef } from "@xwingz/data";
+import { getPlanetTexture, clearPlanetTextureCache } from "@xwingz/render";
 import type { ModeHandler, ModeContext } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
 
@@ -34,63 +35,22 @@ const YAVIN_DEFENSE_SYSTEM: SystemDef = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Planet Styles
-// ─────────────────────────────────────────────────────────────────────────────
-
-type PlanetStyleId = "desert" | "ice" | "jungle" | "ocean" | "volcanic" | "city" | "gas" | "barren" | "mystic";
-type PlanetStyle = { id: PlanetStyleId; base: number; atmos: number; roughness: number; emissive?: number };
-
-const PLANET_STYLES: PlanetStyle[] = [
-  { id: "desert", base: 0xe8c080, atmos: 0xffd19a, roughness: 0.85, emissive: 0x1a1408 },
-  { id: "ice", base: 0xc8e0ff, atmos: 0xcfe6ff, roughness: 0.8, emissive: 0x101820 },
-  { id: "jungle", base: 0x4a9860, atmos: 0x7cffc0, roughness: 0.88, emissive: 0x0a1a0c },
-  { id: "ocean", base: 0x3070d0, atmos: 0x66aaff, roughness: 0.65, emissive: 0x081020 },
-  { id: "volcanic", base: 0x6b3830, atmos: 0xff7744, roughness: 0.85, emissive: 0x301008 },
-  { id: "city", base: 0x8898a8, atmos: 0xaad4ff, roughness: 0.55, emissive: 0x181820 },
-  { id: "gas", base: 0xa080e0, atmos: 0xd2b7ff, roughness: 0.5, emissive: 0x180828 },
-  { id: "barren", base: 0x8a7868, atmos: 0xb9b9b9, roughness: 0.9, emissive: 0x0c0a08 },
-  { id: "mystic", base: 0x6040a0, atmos: 0xad5aff, roughness: 0.6, emissive: 0x180830 }
-];
-
-function pickPlanetStyle(sys: SystemDef): PlanetStyle {
-  const styleId = sys.archetypeId as PlanetStyleId;
-  const fromStyle = PLANET_STYLES.find((s) => s.id === styleId);
-  if (fromStyle) return fromStyle;
-
-  if (sys.id === "yavin_4") return PLANET_STYLES.find((s) => s.id === "jungle")!;
-  const tags = new Set(sys.tags ?? []);
-  if (tags.has("jungle")) return PLANET_STYLES.find((s) => s.id === "jungle")!;
-  if (tags.has("haunted") || tags.has("anomaly")) return PLANET_STYLES.find((s) => s.id === "mystic")!;
-  if (sys.starClass === "black_hole" || sys.starClass === "neutron") return PLANET_STYLES.find((s) => s.id === "mystic")!;
-  if (sys.controllingFaction === "empire") return PLANET_STYLES.find((s) => s.id === "city")!;
-
-  const rng = createRng(deriveSeed(sys.seed, "map_planet_style"));
-  const table: PlanetStyleId[] = ["desert", "ice", "jungle", "ocean", "volcanic", "barren", "gas"];
-  const pick = table[Math.floor(rng.range(0, table.length))] ?? "barren";
-  return PLANET_STYLES.find((s) => s.id === pick)!;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Map Mode State
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class MapMode implements ModeHandler {
-  // Three.js objects
-  private systemsPlanets: THREE.InstancedMesh | null = null;
-  private systemsAtmos: THREE.InstancedMesh | null = null;
+  // Three.js objects - individual planet groups (like ConquestMode)
+  private planetGroups: THREE.Group[] = [];
   private mapStarfield: THREE.Points | null = null;
   private selectedMarker: THREE.Mesh | null = null;
 
   // Selection state
   private selectedSystem: SystemDef | null = null;
+  private selectedPlanetIndex = -1;
 
   // Input helpers
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
-  private tmpMapMat = new THREE.Matrix4();
-
-  // Textures
-  private mapPlanetNoise: THREE.CanvasTexture | null = null;
 
   // Event handlers (stored for cleanup)
   private keyHandler: ((e: KeyboardEvent) => void) | null = null;
@@ -137,152 +97,93 @@ export class MapMode implements ModeHandler {
   exit(ctx: ModeContext): void {
     this.detachInputHandlers();
 
-    // Cleanup Three.js objects
+    // Cleanup planet groups (including sprite textures)
+    for (const group of this.planetGroups) {
+      group.traverse((child) => {
+        if (child instanceof THREE.Sprite) {
+          child.material.map?.dispose();
+          child.material.dispose();
+        }
+      });
+      ctx.scene.remove(group);
+      disposeObject(group);
+    }
+    this.planetGroups = [];
+
+    // Cleanup starfield
     if (this.mapStarfield) {
       ctx.scene.remove(this.mapStarfield);
       this.mapStarfield.geometry.dispose();
       (this.mapStarfield.material as THREE.Material).dispose();
       this.mapStarfield = null;
     }
-    if (this.systemsPlanets) {
-      ctx.scene.remove(this.systemsPlanets);
-      this.systemsPlanets.geometry.dispose();
-      (this.systemsPlanets.material as THREE.Material).dispose();
-      this.systemsPlanets = null;
-    }
-    if (this.systemsAtmos) {
-      ctx.scene.remove(this.systemsAtmos);
-      this.systemsAtmos.geometry.dispose();
-      (this.systemsAtmos.material as THREE.Material).dispose();
-      this.systemsAtmos = null;
-    }
+
+    // Cleanup selection marker
     if (this.selectedMarker) {
       ctx.scene.remove(this.selectedMarker);
       disposeObject(this.selectedMarker);
       this.selectedMarker = null;
     }
 
+    // Clear planet texture cache
+    clearPlanetTextureCache();
+
     this.selectedSystem = null;
+    this.selectedPlanetIndex = -1;
   }
 
   private buildGalaxy(ctx: ModeContext): void {
-    // Create planet noise texture if needed
-    if (!this.mapPlanetNoise) {
-      this.mapPlanetNoise = this.createMapNoiseTexture(deriveSeed(GLOBAL_SEED, "map_planet_noise_v0"));
+    // Build individual planet groups (matching ConquestMode style)
+    for (let i = 0; i < PLANETS.length; i++) {
+      const planet = PLANETS[i]!;
+      const group = this.createPlanetMesh(planet, i);
+      ctx.scene.add(group);
+      this.planetGroups.push(group);
     }
-
-    const systems = PLANETS.map(planetToSystem);
-
-    // Build planet meshes
-    const planetGeo = new THREE.SphereGeometry(1, 32, 32);
-    const atmosGeo = new THREE.SphereGeometry(1.12, 24, 24);
-
-    const planetMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.65,
-      metalness: 0.05,
-      emissive: 0x111111,
-      emissiveIntensity: 0.3,
-      bumpMap: this.mapPlanetNoise,
-      bumpScale: 0.4,
-      roughnessMap: this.mapPlanetNoise
-    });
-
-    const atmosMat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.5,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.BackSide
-    });
-
-    this.systemsPlanets = new THREE.InstancedMesh(planetGeo, planetMat, systems.length);
-    this.systemsAtmos = new THREE.InstancedMesh(atmosGeo, atmosMat, systems.length);
-
-    const radii: number[] = new Array(systems.length);
-    const tmpPos = new THREE.Vector3();
-    const tmpQ = new THREE.Quaternion();
-    const tmpS = new THREE.Vector3();
-    const tmpColor = new THREE.Color();
-
-    systems.forEach((sys, idx) => {
-      tmpPos.set(
-        sys.galaxyPos[0] * GALAXY_SCALE,
-        sys.galaxyPos[1] * GALAXY_SCALE,
-        sys.galaxyPos[2] * GALAXY_SCALE
-      );
-
-      const rng = createRng(deriveSeed(sys.seed, "map_planet_v0"));
-      const style = pickPlanetStyle(sys);
-      const r = sys.id === "yavin_4" ? 22 : rng.range(10, 20);
-      radii[idx] = r;
-
-      tmpQ.identity();
-      tmpS.setScalar(r);
-      this.tmpMapMat.compose(tmpPos, tmpQ, tmpS);
-      this.systemsPlanets!.setMatrixAt(idx, this.tmpMapMat);
-
-      tmpS.setScalar(r * 1.08);
-      this.tmpMapMat.compose(tmpPos, tmpQ, tmpS);
-      this.systemsAtmos!.setMatrixAt(idx, this.tmpMapMat);
-
-      tmpColor.setHex(style.base);
-      tmpColor.offsetHSL(rng.range(-0.03, 0.03), rng.range(-0.06, 0.06), rng.range(-0.08, 0.08));
-      this.systemsPlanets!.setColorAt(idx, tmpColor);
-
-      tmpColor.setHex(style.atmos);
-      tmpColor.offsetHSL(rng.range(-0.04, 0.04), rng.range(-0.08, 0.08), rng.range(-0.08, 0.1));
-      this.systemsAtmos!.setColorAt(idx, tmpColor);
-    });
-
-    this.systemsPlanets.instanceMatrix.needsUpdate = true;
-    this.systemsAtmos.instanceMatrix.needsUpdate = true;
-    if (this.systemsPlanets.instanceColor) this.systemsPlanets.instanceColor.needsUpdate = true;
-    if (this.systemsAtmos.instanceColor) this.systemsAtmos.instanceColor.needsUpdate = true;
-
-    this.systemsPlanets.userData.systems = systems;
-    this.systemsPlanets.userData.radii = radii;
-    this.systemsAtmos.userData.systems = systems;
-    this.systemsAtmos.userData.radii = radii;
 
     // Backdrop starfield
     const starRng = createRng(deriveSeed(GLOBAL_SEED, "map_starfield_v0"));
-    const count = 2600;
+    const count = 4000;
     const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
-      const r = 2200 + starRng.range(0, 9800);
+      const r = 3000 + starRng.range(0, 12000);
       const theta = starRng.range(0, Math.PI * 2);
       const phi = Math.acos(starRng.range(-1, 1));
       positions[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
       positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
       positions[i * 3 + 2] = r * Math.cos(phi);
+
+      // Color variation - blue/white stars
+      const brightness = 0.6 + starRng.range(0, 0.4);
+      colors[i * 3 + 0] = brightness * (0.8 + starRng.range(0, 0.2));
+      colors[i * 3 + 1] = brightness * (0.85 + starRng.range(0, 0.15));
+      colors[i * 3 + 2] = brightness;
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    starGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     const starMat = new THREE.PointsMaterial({
-      color: 0x9ab7ff,
-      size: 1.6,
+      size: 2.5,
       sizeAttenuation: true,
+      vertexColors: true,
       transparent: true,
-      opacity: 0.85
+      opacity: 0.9
     });
     this.mapStarfield = new THREE.Points(starGeo, starMat);
     ctx.scene.add(this.mapStarfield);
 
-    ctx.scene.add(this.systemsAtmos);
-    ctx.scene.add(this.systemsPlanets);
-
-    // Selection marker
+    // Selection marker (ring style like ConquestMode)
     if (!this.selectedMarker) {
-      const mGeo = new THREE.SphereGeometry(1, 14, 14);
+      const mGeo = new THREE.RingGeometry(28, 32, 64);
       const mMat = new THREE.MeshBasicMaterial({
-        color: 0x7cff7c,
-        wireframe: true,
+        color: 0x00ffff,
         transparent: true,
-        opacity: 0.85
+        opacity: 0.8,
+        side: THREE.DoubleSide
       });
       this.selectedMarker = new THREE.Mesh(mGeo, mMat);
+      this.selectedMarker.rotation.x = -Math.PI / 2;
       this.selectedMarker.visible = false;
     }
     ctx.scene.add(this.selectedMarker);
@@ -291,54 +192,106 @@ export class MapMode implements ModeHandler {
     this.updateHud(ctx);
   }
 
-  private createMapNoiseTexture(seed: bigint): THREE.CanvasTexture {
-    const w = 256;
-    const h = 128;
-    const smallW = 64;
-    const smallH = 32;
-    const rng = createRng(seed);
+  private createPlanetMesh(planet: PlanetDef, index: number): THREE.Group {
+    const group = new THREE.Group();
+    const scale = GALAXY_SCALE * 0.18;
 
-    const small = document.createElement("canvas");
-    small.width = smallW;
-    small.height = smallH;
-    const sctx = small.getContext("2d");
-    if (!sctx) throw new Error("noise ctx missing");
+    group.position.set(planet.position[0] * scale, 0, planet.position[1] * scale);
+    group.userData.planetIndex = index;
+    group.userData.planetId = planet.id;
 
-    const img = sctx.createImageData(smallW, smallH);
-    for (let i = 0; i < img.data.length; i += 4) {
-      const v = Math.floor(255 * (0.45 + rng.range(-0.25, 0.25)));
-      img.data[i + 0] = v;
-      img.data[i + 1] = v;
-      img.data[i + 2] = v;
-      img.data[i + 3] = 255;
+    // Get procedural planet texture (matching ConquestMode)
+    const planetTexture = getPlanetTexture(planet.style, planet.id, 256);
+
+    // Planet sphere with textured material (matching ConquestMode style)
+    const planetGeo = new THREE.SphereGeometry(16, 32, 32);
+    const planetMat = new THREE.MeshStandardMaterial({
+      map: planetTexture,
+      emissive: 0xffffff,
+      emissiveMap: planetTexture,
+      emissiveIntensity: 0.8,
+      roughness: 0.8,
+      metalness: 0.1
+    });
+    const planetMesh = new THREE.Mesh(planetGeo, planetMat);
+    planetMesh.name = "planet";
+    group.add(planetMesh);
+
+    // Atmosphere glow (faction-based colors)
+    const atmosColor = this.getFactionGlowColor(planet.faction);
+    const atmosGeo = new THREE.SphereGeometry(19, 24, 24);
+    const atmosMat = new THREE.MeshBasicMaterial({
+      color: atmosColor,
+      transparent: true,
+      opacity: 0.3,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide
+    });
+    const atmosMesh = new THREE.Mesh(atmosGeo, atmosMat);
+    atmosMesh.name = "atmosphere";
+    group.add(atmosMesh);
+
+    // Faction ring indicator (matching ConquestMode)
+    const ringColor = this.getFactionRingColor(planet.faction);
+    const ringGeo = new THREE.RingGeometry(22, 24, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: ringColor,
+      transparent: true,
+      opacity: 0.7,
+      side: THREE.DoubleSide
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.name = "factionRing";
+    group.add(ring);
+
+    // Name label (sprite - matching ConquestMode)
+    const label = this.createTextSprite(planet.name.toUpperCase());
+    label.position.set(0, 32, 0);
+    group.add(label);
+
+    return group;
+  }
+
+  private createTextSprite(text: string): THREE.Sprite {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d")!;
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.font = "bold 24px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(50, 12.5, 1);
+    return sprite;
+  }
+
+  private getFactionRingColor(faction: string): number {
+    switch (faction) {
+      case "republic": return 0xff6644;  // Rebel orange/red
+      case "empire": return 0x4488ff;    // Imperial blue
+      default: return 0x888888;          // Neutral gray
     }
-    sctx.putImageData(img, 0, 0);
+  }
 
-    const c = document.createElement("canvas");
-    c.width = w;
-    c.height = h;
-    const cctx = c.getContext("2d");
-    if (!cctx) throw new Error("noise ctx missing");
-    cctx.imageSmoothingEnabled = true;
-    cctx.drawImage(small, 0, 0, w, h);
-
-    cctx.globalCompositeOperation = "overlay";
-    for (let i = 0; i < 6; i++) {
-      const y = rng.range(0, h);
-      const bandH = rng.range(10, 28);
-      cctx.fillStyle = `rgba(255,255,255,${rng.range(0.05, 0.12)})`;
-      cctx.fillRect(0, y, w, bandH);
+  private getFactionGlowColor(faction: string): number {
+    switch (faction) {
+      case "republic": return 0xff2200;  // Rebel glow
+      case "empire": return 0x2266ff;    // Imperial glow
+      default: return 0x444444;          // Neutral glow
     }
-    cctx.globalCompositeOperation = "source-over";
-
-    const tex = new THREE.CanvasTexture(c);
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.repeat.set(2, 1);
-    tex.colorSpace = THREE.NoColorSpace;
-    tex.anisotropy = 4;
-    tex.needsUpdate = true;
-    return tex;
   }
 
   private updateHud(ctx: ModeContext, planetDef?: PlanetDef, sys?: SystemDef): void {
@@ -349,7 +302,7 @@ export class MapMode implements ModeHandler {
         `Credits: ${ctx.profile.credits} | Tier: ${ctx.profile.missionTier}\n` +
         `Planets: 10 iconic Star Wars locations\n` +
         `Click planet to select | Enter to fly\n` +
-        `1 Yavin mission | 2/G Ground | 3/C Conquest | U upgrades`;
+        `1 Yavin | 2/G Ground | 3/C Conquest | 4 Star Destroyer | U upgrades`;
     } else {
       const preview = getMission(sys, ctx.profile.missionTier);
       const planetName = planetDef?.name ?? sys.id;
@@ -382,6 +335,14 @@ export class MapMode implements ModeHandler {
         case "c":
           ctx.requestModeChange("conquest", { type: "conquest" });
           break;
+        case "4": {
+          const coruscant = PLANETS.find(p => p.id === "coruscant");
+          if (coruscant) {
+            const system = planetToSystem(coruscant);
+            ctx.requestModeChange("flight", { type: "flight", system, scenario: "destroy_star_destroyer" });
+          }
+          break;
+        }
         case "Enter":
           if (this.selectedSystem) {
             ctx.requestModeChange("flight", { type: "flight", system: this.selectedSystem, scenario: "sandbox" });
@@ -404,37 +365,34 @@ export class MapMode implements ModeHandler {
 
     // Click handler for planet selection
     this.clickHandler = (ev: MouseEvent) => {
-      if (!this.systemsPlanets) return;
-
       this.mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
       this.mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
       this.raycaster.setFromCamera(this.mouse, ctx.camera);
 
-      const hits = this.raycaster.intersectObject(this.systemsPlanets);
-      if (hits.length === 0) return;
+      // Check each planet group for hits
+      for (let i = 0; i < this.planetGroups.length; i++) {
+        const group = this.planetGroups[i]!;
+        const planetMesh = group.getObjectByName("planet");
+        if (!planetMesh) continue;
 
-      const hit = hits[0];
-      const idx = hit.instanceId ?? -1;
-      const systems = this.systemsPlanets.userData.systems as SystemDef[];
-      const sys = systems[idx];
-      if (!sys) return;
+        const hits = this.raycaster.intersectObject(planetMesh);
+        if (hits.length > 0) {
+          this.selectedPlanetIndex = i;
+          const planetDef = PLANETS[i]!;
+          const sys = planetToSystem(planetDef);
+          this.selectedSystem = sys;
 
-      this.selectedSystem = sys;
-      const planetDef = PLANETS.find(p => p.id === sys.id);
+          // Update selection marker (ring style)
+          if (this.selectedMarker) {
+            this.selectedMarker.visible = true;
+            this.selectedMarker.position.copy(group.position);
+            this.selectedMarker.position.y = 1;
+          }
 
-      if (this.selectedMarker) {
-        this.selectedMarker.visible = true;
-        this.selectedMarker.position.set(
-          sys.galaxyPos[0] * GALAXY_SCALE,
-          sys.galaxyPos[1] * GALAXY_SCALE,
-          sys.galaxyPos[2] * GALAXY_SCALE
-        );
-        const radii = this.systemsPlanets.userData.radii as number[] | undefined;
-        const r = radii?.[idx] ?? 14;
-        this.selectedMarker.scale.setScalar(r * 1.25);
+          this.updateHud(ctx, planetDef, sys);
+          return;
+        }
       }
-
-      this.updateHud(ctx, planetDef, sys);
     };
     window.addEventListener("click", this.clickHandler);
   }

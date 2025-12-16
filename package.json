@@ -9,7 +9,7 @@
     "tools/*"
   ],
   "scripts": {
-    "dev": "turbo run dev --filter=apps/web",
+    "dev": "turbo run dev --filter=web",
     "build": "turbo run build",
     "build:packages": "turbo run build --filter='./packages/*'",
     "build:apps": "turbo run build --filter='./apps/*' --filter='./tools/*'",

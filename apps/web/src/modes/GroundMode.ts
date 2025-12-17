@@ -1,5 +1,9 @@
 /**
  * GroundMode - Battlefront-style infantry combat
+ *
+ * Orchestrates ground combat scenarios via a modular handler pattern.
+ * GroundMode manages common infrastructure (physics, input, camera, effects).
+ * Scenario handlers manage terrain, spawning, objectives, and HUD content.
  */
 
 import * as THREE from "three";
@@ -20,10 +24,6 @@ import {
   weaponHeatSystem,
   consumeGroundImpactEvents,
   consumeBlasterBoltSpawnEvents,
-  spawnSoldier,
-  spawnCommandPost,
-  spawnSpeederBike,
-  spawnATST,
   Transform,
   GroundInput,
   Health,
@@ -32,43 +32,55 @@ import {
 import {
   createPhysicsWorld,
   stepPhysics,
-  createGroundPlane,
   type PhysicsWorld
 } from "@xwingz/physics";
 import type {
   ModeHandler,
   ModeContext,
   ModeTransitionData,
-  GroundFromFlightData
+  GroundFromFlightData,
+  GroundScenario
 } from "./types";
 import { isGroundFromFlightTransition } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
 import { ExplosionManager } from "../rendering/effects";
 import { createProceduralShip } from "@xwingz/render";
+import type {
+  GroundContext,
+  GroundHudElements,
+  GroundScenarioHandler
+} from "./ground/GroundScenarioTypes";
+import { DefaultScenario } from "./ground/DefaultScenario";
+import { HothDefenseScenario } from "./ground/HothDefenseScenario";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ground Mode State
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class GroundMode implements ModeHandler {
+  // Scenario handler
+  private scenarioHandler: GroundScenarioHandler | null = null;
+  private scenarioType: GroundScenario = "default";
+
   // Physics
   private physicsWorld: PhysicsWorld | null = null;
 
   // Input
   private groundInput: ReturnType<typeof createGroundInput> | null = null;
 
-  // Entity tracking
+  // Entity tracking (shared with scenarios via GroundContext)
   private playerSoldierEid: number | null = null;
   private commandPostEids: number[] = [];
   private enemyEids: number[] = [];
   private vehicleEids: number[] = [];
 
-  // Meshes
+  // Meshes (shared with scenarios via GroundContext)
   private playerMesh: THREE.Object3D | null = null;
   private enemyMeshes = new Map<number, THREE.Object3D>();
   private commandPostMeshes: THREE.Object3D[] = [];
   private landedShipMesh: THREE.Object3D | null = null;
   private vehicleMeshes = new Map<number, THREE.Object3D>();
+  private groundMesh: THREE.Mesh | null = null;
 
   // Blaster bolt meshes
   private boltMeshes = new Map<number, THREE.Mesh>();
@@ -89,6 +101,9 @@ export class GroundMode implements ModeHandler {
   private hitMarkerElement: HTMLDivElement | null = null;
   private readonly HIT_MARKER_DURATION = 0.15;
 
+  // HUD elements for scenarios
+  private hudElements: GroundHudElements | null = null;
+
   // Camera
   private camInit = false;
   private tmpCamOffset = new THREE.Vector3();
@@ -102,6 +117,9 @@ export class GroundMode implements ModeHandler {
   enter(ctx: ModeContext, data?: ModeTransitionData): void {
     ctx.controls.enabled = false;
     this.camInit = false;
+
+    // Determine scenario type from transition data
+    this.scenarioType = (data as any)?.scenario ?? "default";
 
     // Check for seamless transition from flight mode
     if (isGroundFromFlightTransition(data)) {
@@ -146,6 +164,9 @@ export class GroundMode implements ModeHandler {
     document.body.appendChild(this.hitMarkerElement);
     this.hitMarkerTimer = 0;
 
+    // Setup HUD elements for scenarios
+    this.hudElements = this.createHudElements();
+
     // Setup scene
     ctx.scene.clear();
     ctx.scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -162,17 +183,6 @@ export class GroundMode implements ModeHandler {
     sun.shadow.camera.bottom = -100;
     ctx.scene.add(sun);
 
-    // Ground plane (visual)
-    const groundGeo = new THREE.PlaneGeometry(200, 200);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x556644,
-      roughness: 0.95
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    ctx.scene.add(ground);
-
     // Initialize muzzle flash light (starts off)
     this.muzzleFlashLight = new THREE.PointLight(0x44ff44, 0, 5);
     ctx.scene.add(this.muzzleFlashLight);
@@ -180,19 +190,76 @@ export class GroundMode implements ModeHandler {
 
     // Create physics world
     this.physicsWorld = createPhysicsWorld({ x: 0, y: -9.81, z: 0 });
-    createGroundPlane(this.physicsWorld, 0);
 
     // Create input handler
     this.groundInput = createGroundInput(window);
 
-    // Spawn player soldier - use transition position if available
-    const spawnX = this.transitionData?.landingPosition.x ?? 0;
-    const spawnY = 1;
-    const spawnZ = (this.transitionData?.landingPosition.z ?? 0) + 5; // Offset from ship
-    this.playerSoldierEid = spawnSoldier(ctx.world, this.physicsWorld, spawnX, spawnY, spawnZ, 0, 0, false);
-    this.playerMesh = this.buildSoldierMesh(0);
-    this.playerMesh.position.set(spawnX, 0, spawnZ);
-    ctx.scene.add(this.playerMesh);
+    // Instantiate scenario handler
+    this.scenarioHandler = this.createScenarioHandler(this.scenarioType);
+
+    // Create ground context for scenario
+    const gctx = this.createGroundContext(ctx);
+
+    // Let scenario set up terrain, entities, etc.
+    this.scenarioHandler.enter(gctx);
+
+    // Build player mesh if scenario spawned player
+    if (gctx.playerEid !== null && !this.playerMesh) {
+      this.playerSoldierEid = gctx.playerEid;
+      this.playerMesh = this.buildSoldierMesh(0);
+      const px = Transform.x[this.playerSoldierEid] ?? 0;
+      const py = Transform.y[this.playerSoldierEid] ?? 0;
+      const pz = Transform.z[this.playerSoldierEid] ?? 0;
+      this.playerMesh.position.set(px, py, pz);
+      ctx.scene.add(this.playerMesh);
+    }
+
+    // Build enemy meshes for any enemies spawned by scenario
+    for (const eid of gctx.enemyEids) {
+      if (!this.enemyMeshes.has(eid)) {
+        const enemyMesh = this.buildSoldierMesh(1);
+        const ex = Transform.x[eid] ?? 0;
+        const ey = Transform.y[eid] ?? 0;
+        const ez = Transform.z[eid] ?? 0;
+        enemyMesh.position.set(ex, ey, ez);
+        ctx.scene.add(enemyMesh);
+        this.enemyMeshes.set(eid, enemyMesh);
+      }
+    }
+    this.enemyEids = [...gctx.enemyEids];
+
+    // Build command post meshes
+    for (const cpEid of gctx.commandPostEids) {
+      if (this.commandPostMeshes.length < gctx.commandPostEids.length) {
+        // Get team from entity (simplified - assume team 0 for now)
+        const cpMesh = this.buildCommandPostMesh(-1);
+        const cx = Transform.x[cpEid] ?? 0;
+        const cz = Transform.z[cpEid] ?? 0;
+        cpMesh.position.set(cx, 0, cz);
+        cpMesh.userData.cpEid = cpEid;
+        ctx.scene.add(cpMesh);
+        this.commandPostMeshes.push(cpMesh);
+      }
+    }
+    this.commandPostEids = [...gctx.commandPostEids];
+
+    // Build vehicle meshes
+    for (const vEid of gctx.vehicleEids) {
+      if (!this.vehicleMeshes.has(vEid)) {
+        // Determine vehicle type (simplified - just build speeder for now)
+        const vehicleMesh = this.buildSpeederBikeMesh(0);
+        const vx = Transform.x[vEid] ?? 0;
+        const vy = Transform.y[vEid] ?? 0;
+        const vz = Transform.z[vEid] ?? 0;
+        vehicleMesh.position.set(vx, vy, vz);
+        ctx.scene.add(vehicleMesh);
+        this.vehicleMeshes.set(vEid, vehicleMesh);
+      }
+    }
+    this.vehicleEids = [...gctx.vehicleEids];
+
+    // Store ground mesh reference
+    this.groundMesh = gctx.groundMesh;
 
     // If transitioned from flight, spawn landed ship mesh
     if (this.transitionData) {
@@ -205,60 +272,127 @@ export class GroundMode implements ModeHandler {
       ctx.scene.add(this.landedShipMesh);
     }
 
-    // Spawn command posts
-    const cpPositions = [
-      { x: 0, z: -30, team: -1 },   // Neutral CP ahead
-      { x: 30, z: 0, team: 0 },     // Friendly CP to right
-      { x: -30, z: 0, team: 1 },    // Enemy CP to left
-    ];
-    for (const pos of cpPositions) {
-      const cpEid = spawnCommandPost(ctx.world, pos.x, 0, pos.z, pos.team, 10, 0.15);
-      this.commandPostEids.push(cpEid);
-      const cpMesh = this.buildCommandPostMesh(pos.team);
-      cpMesh.position.set(pos.x, 0, pos.z);
-      cpMesh.userData.cpEid = cpEid;
-      ctx.scene.add(cpMesh);
-      this.commandPostMeshes.push(cpMesh);
-    }
-
-    // Spawn enemy soldiers
-    const enemyPositions = [
-      { x: -25, z: -10 },
-      { x: -28, z: 5 },
-      { x: -20, z: 0 },
-    ];
-    for (const pos of enemyPositions) {
-      const enemyEid = spawnSoldier(ctx.world, this.physicsWorld, pos.x, 1, pos.z, 1, 0, true);
-      this.enemyEids.push(enemyEid);
-      const enemyMesh = this.buildSoldierMesh(1);
-      enemyMesh.position.set(pos.x, 0, pos.z);
-      ctx.scene.add(enemyMesh);
-      this.enemyMeshes.set(enemyEid, enemyMesh);
-    }
-
-    // Spawn vehicles
-    // Speeder bike (friendly) near player
-    const speederEid = spawnSpeederBike(ctx.world, 10, 0.5, 5, 0);
-    this.vehicleEids.push(speederEid);
-    const speederMesh = this.buildSpeederBikeMesh(0);
-    speederMesh.position.set(10, 0.5, 5);
-    ctx.scene.add(speederMesh);
-    this.vehicleMeshes.set(speederEid, speederMesh);
-
-    // AT-ST (enemy) in the distance
-    const atstEid = spawnATST(ctx.world, -40, 3, -20, 1);
-    this.vehicleEids.push(atstEid);
-    const atstMesh = this.buildATSTMesh(1);
-    atstMesh.position.set(-40, 3, -20);
-    ctx.scene.add(atstMesh);
-    this.vehicleMeshes.set(atstEid, atstMesh);
-
     // Position camera
     ctx.camera.position.set(0, 5, 10);
     ctx.camera.lookAt(0, 1, 0);
 
     // Setup pointer lock on click
     ctx.canvas.addEventListener("click", this.handleCanvasClick);
+  }
+
+  /**
+   * Create scenario handler based on type
+   */
+  private createScenarioHandler(type: GroundScenario): GroundScenarioHandler {
+    switch (type) {
+      case "hoth_defense":
+        return new HothDefenseScenario();
+      case "default":
+      default:
+        return new DefaultScenario();
+    }
+  }
+
+  /**
+   * Create ground context for scenario handlers
+   */
+  private createGroundContext(ctx: ModeContext): GroundContext {
+    return {
+      ctx,
+      physicsWorld: this.physicsWorld!,
+      playerEid: this.playerSoldierEid,
+      playerMesh: this.playerMesh,
+      enemyEids: this.enemyEids,
+      enemyMeshes: this.enemyMeshes,
+      vehicleEids: this.vehicleEids,
+      vehicleMeshes: this.vehicleMeshes,
+      commandPostEids: this.commandPostEids,
+      commandPostMeshes: this.commandPostMeshes,
+      boltMeshes: this.boltMeshes,
+      explosions: this.explosions,
+      groundMesh: this.groundMesh
+    };
+  }
+
+  /**
+   * Create HUD elements for scenarios
+   */
+  private createHudElements(): GroundHudElements {
+    // Health bar
+    const health = document.createElement("div");
+    health.id = "ground-hud-health";
+    health.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      color: #44ff44;
+      font-family: monospace;
+      font-size: 14px;
+      text-shadow: 0 0 4px #000;
+    `;
+    document.body.appendChild(health);
+
+    // Stamina bar
+    const stamina = document.createElement("div");
+    stamina.id = "ground-hud-stamina";
+    stamina.style.cssText = `
+      position: fixed;
+      bottom: 40px;
+      left: 20px;
+      color: #4488ff;
+      font-family: monospace;
+      font-size: 14px;
+      text-shadow: 0 0 4px #000;
+    `;
+    document.body.appendChild(stamina);
+
+    // Heat bar
+    const heat = document.createElement("div");
+    heat.id = "ground-hud-heat";
+    heat.style.cssText = `
+      position: fixed;
+      bottom: 60px;
+      left: 20px;
+      color: #ff8844;
+      font-family: monospace;
+      font-size: 14px;
+      text-shadow: 0 0 4px #000;
+    `;
+    document.body.appendChild(heat);
+
+    // Mission message
+    const mission = document.createElement("div");
+    mission.id = "ground-hud-mission";
+    mission.style.cssText = `
+      position: fixed;
+      top: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #ffcc44;
+      font-family: monospace;
+      font-size: 18px;
+      text-shadow: 0 0 6px #000;
+      text-align: center;
+    `;
+    document.body.appendChild(mission);
+
+    // Objective
+    const objective = document.createElement("div");
+    objective.id = "ground-hud-objective";
+    objective.style.cssText = `
+      position: fixed;
+      top: 90px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #aaddff;
+      font-family: monospace;
+      font-size: 14px;
+      text-shadow: 0 0 4px #000;
+      text-align: center;
+    `;
+    document.body.appendChild(objective);
+
+    return { health, stamina, heat, mission, objective };
   }
 
   tick(ctx: ModeContext, dt: number): void {
@@ -274,6 +408,22 @@ export class GroundMode implements ModeHandler {
     if (this.groundInput.state.toggleMap) {
       ctx.requestModeChange("map", { type: "map" });
       return;
+    }
+
+    // Create ground context for this frame
+    const gctx = this.createGroundContext(ctx);
+
+    // Check scenario transitions
+    if (this.scenarioHandler) {
+      const transition = this.scenarioHandler.canTransition();
+
+      // Handle speeder boarding (for Hoth)
+      if (transition === "speeder" && this.groundInput.state.interact) {
+        if (this.scenarioHandler.handleSpeederTransition) {
+          this.scenarioHandler.handleSpeederTransition(gctx);
+          return;
+        }
+      }
     }
 
     // Launch detection (only if landed from flight with valid system)
@@ -316,6 +466,34 @@ export class GroundMode implements ModeHandler {
 
     // Step physics
     stepPhysics(this.physicsWorld, dt);
+
+    // Run scenario-specific tick
+    if (this.scenarioHandler) {
+      const shouldExit = this.scenarioHandler.tick(gctx, dt);
+      if (shouldExit) {
+        ctx.requestModeChange("map", { type: "map" });
+        return;
+      }
+
+      // Update HUD from scenario
+      if (this.hudElements) {
+        this.scenarioHandler.updateHud(gctx, this.hudElements);
+      }
+
+      // Sync newly spawned enemies from scenario
+      for (const eid of gctx.enemyEids) {
+        if (!this.enemyMeshes.has(eid)) {
+          const enemyMesh = this.buildSoldierMesh(1);
+          const ex = Transform.x[eid] ?? 0;
+          const ey = Transform.y[eid] ?? 0;
+          const ez = Transform.z[eid] ?? 0;
+          enemyMesh.position.set(ex, ey, ez);
+          ctx.scene.add(enemyMesh);
+          this.enemyMeshes.set(eid, enemyMesh);
+        }
+      }
+      this.enemyEids = [...gctx.enemyEids];
+    }
 
     // Handle bolt spawn events (create meshes)
     const boltSpawns = consumeBlasterBoltSpawnEvents();
@@ -487,6 +665,13 @@ export class GroundMode implements ModeHandler {
   exit(ctx: ModeContext): void {
     ctx.canvas.removeEventListener("click", this.handleCanvasClick);
 
+    // Call scenario exit for cleanup
+    if (this.scenarioHandler) {
+      const gctx = this.createGroundContext(ctx);
+      this.scenarioHandler.exit(gctx);
+      this.scenarioHandler = null;
+    }
+
     // Remove player
     if (this.playerSoldierEid !== null) {
       removeEntity(ctx.world, this.playerSoldierEid);
@@ -587,6 +772,19 @@ export class GroundMode implements ModeHandler {
     // Reset transition state
     this.transitionData = null;
     this.canLaunch = false;
+
+    // Clean up HUD elements
+    if (this.hudElements) {
+      this.hudElements.health.remove();
+      this.hudElements.stamina.remove();
+      this.hudElements.heat.remove();
+      this.hudElements.mission.remove();
+      this.hudElements.objective.remove();
+      this.hudElements = null;
+    }
+
+    // Reset ground mesh reference
+    this.groundMesh = null;
   }
 
   private handleCanvasClick = (): void => {
@@ -736,96 +934,6 @@ export class GroundMode implements ModeHandler {
     rightCannon.rotation.x = Math.PI / 2;
     rightCannon.position.set(0.3, 0.4, -1.6);
     group.add(rightCannon);
-
-    return group;
-  }
-
-  private buildATSTMesh(teamId: number): THREE.Object3D {
-    const group = new THREE.Group();
-    const bodyColor = teamId === 0 ? 0x888888 : 0x666666;
-    const legColor = 0x555555;
-
-    // Head/cockpit
-    const headGeo = new THREE.BoxGeometry(2.5, 1.8, 2);
-    const headMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.5 });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = 6;
-    head.castShadow = true;
-    group.add(head);
-
-    // Viewport (dark)
-    const viewportGeo = new THREE.BoxGeometry(1.8, 0.4, 0.1);
-    const viewportMat = new THREE.MeshStandardMaterial({
-      color: 0x111122,
-      roughness: 0.1,
-      transparent: true,
-      opacity: 0.8
-    });
-    const viewport = new THREE.Mesh(viewportGeo, viewportMat);
-    viewport.position.set(0, 6.2, -1.05);
-    group.add(viewport);
-
-    // Chin guns (twin blasters)
-    const gunGeo = new THREE.CylinderGeometry(0.15, 0.15, 1.5, 8);
-    const gunMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4 });
-    const leftGun = new THREE.Mesh(gunGeo, gunMat);
-    leftGun.rotation.x = Math.PI / 2;
-    leftGun.position.set(-0.6, 5.3, -1.5);
-    group.add(leftGun);
-    const rightGun = new THREE.Mesh(gunGeo, gunMat);
-    rightGun.rotation.x = Math.PI / 2;
-    rightGun.position.set(0.6, 5.3, -1.5);
-    group.add(rightGun);
-
-    // Neck
-    const neckGeo = new THREE.CylinderGeometry(0.5, 0.6, 1.2, 8);
-    const neckMat = new THREE.MeshStandardMaterial({ color: legColor, roughness: 0.6 });
-    const neck = new THREE.Mesh(neckGeo, neckMat);
-    neck.position.y = 4.5;
-    group.add(neck);
-
-    // Hip joint
-    const hipGeo = new THREE.BoxGeometry(2, 0.8, 1);
-    const hipMat = new THREE.MeshStandardMaterial({ color: legColor, roughness: 0.6 });
-    const hip = new THREE.Mesh(hipGeo, hipMat);
-    hip.position.y = 3.5;
-    group.add(hip);
-
-    // Legs (simplified)
-    const legGeo = new THREE.BoxGeometry(0.4, 3, 0.4);
-    const legMat = new THREE.MeshStandardMaterial({ color: legColor, roughness: 0.6 });
-
-    // Left leg
-    const leftUpperLeg = new THREE.Mesh(legGeo, legMat);
-    leftUpperLeg.position.set(-1, 2, 0);
-    leftUpperLeg.rotation.z = 0.15;
-    group.add(leftUpperLeg);
-
-    const leftLowerLeg = new THREE.Mesh(legGeo, legMat);
-    leftLowerLeg.position.set(-1.3, 0, 0);
-    leftLowerLeg.rotation.z = -0.1;
-    group.add(leftLowerLeg);
-
-    // Right leg
-    const rightUpperLeg = new THREE.Mesh(legGeo, legMat);
-    rightUpperLeg.position.set(1, 2, 0);
-    rightUpperLeg.rotation.z = -0.15;
-    group.add(rightUpperLeg);
-
-    const rightLowerLeg = new THREE.Mesh(legGeo, legMat);
-    rightLowerLeg.position.set(1.3, 0, 0);
-    rightLowerLeg.rotation.z = 0.1;
-    group.add(rightLowerLeg);
-
-    // Feet
-    const footGeo = new THREE.BoxGeometry(0.8, 0.3, 1.2);
-    const footMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.7 });
-    const leftFoot = new THREE.Mesh(footGeo, footMat);
-    leftFoot.position.set(-1.5, -1.3, 0);
-    group.add(leftFoot);
-    const rightFoot = new THREE.Mesh(footGeo, footMat);
-    rightFoot.position.set(1.5, -1.3, 0);
-    group.add(rightFoot);
 
     return group;
   }

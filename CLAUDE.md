@@ -87,6 +87,37 @@ rm -rf .turbo                               # Clear Turborepo cache
 - Domain tags (`InSpaceDomain`, `InGroundDomain`) control which systems affect entities
 - `Persistent` component marks entities that survive mode transitions
 
+**Flight Mode Scenario System (`apps/web/src/modes/flight/`):**
+FlightMode uses a modular scenario handler pattern. Each scenario implements `FlightScenarioHandler`:
+- `SandboxScenario.ts` - Free roam with random spawns
+- `YavinDefenseScenario.ts` - Planetary defense with terrain, fog, and base HP
+- `StarDestroyerScenario.ts` - Capital ship assault with wingmen, phase progression
+
+Scenario handlers implement: `enter()`, `tick()`, `handleHyperspace()`, `updateHud()`, `getMissionMessage()`, `canLand()`, `exit()`
+
+Supporting modules:
+- `FlightScenarioTypes.ts` - Shared types (`FlightContext`, `FlightHudElements`, mission state types)
+- `SceneBuilder.ts` - Starfield, planetary terrain generation
+- `CameraController.ts` - Third-person chase camera
+- `CapitalShipController.ts` - Capital ship mesh/entity management
+- `HUDController.ts` - HUD element creation and bracket positioning
+- `E2EHelpers.ts` - Test hooks exposed on `window.__xwingz` and `window.__xwingzTest`
+
+**E2E Testing (`tests/e2e/`):**
+Tests use Playwright with SwiftShader for headless WebGL. The `?e2e=1` URL param enables test helpers:
+```typescript
+// Read game state
+window.__xwingz?.mode           // "map" | "flight"
+window.__xwingz?.scenario       // "sandbox" | "yavin_defense" | "destroy_star_destroyer"
+window.__xwingz?.capitalShipCount
+window.__xwingz?.targetCount
+window.__xwingz?.enterFlight(system, scenario)
+
+// Test actions
+window.__xwingzTest?.killAllEnemies()
+window.__xwingzTest?.destroyStarDestroyer()
+```
+
 ## Deterministic RNG
 
 All gameplay code uses seeded RNG for determinism and reproducibility:

@@ -119,14 +119,15 @@ canvas {
 
 .hud-top {
   position: absolute;
-  top: 8%;
+  top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  padding: 6px 10px;
+  padding: 8px 14px;
   border: 1px solid rgba(124, 255, 124, 0.6);
-  background: rgba(2, 3, 7, 0.35);
+  background: rgba(2, 3, 7, 0.85);
   font-size: 12px;
   letter-spacing: 0.08em;
+  z-index: 10;
 }
 
 .hud-target {
@@ -209,7 +210,7 @@ canvas {
   width: 180px;
   padding: 12px;
   border: 1px solid rgba(124, 255, 124, 0.6);
-  background: rgba(2, 3, 7, 0.35);
+  background: rgba(2, 3, 7, 0.85);
 }
 
 .hud-left {
@@ -243,7 +244,28 @@ canvas {
   opacity: 0.9;
   padding: 8px 10px;
   border: 1px solid rgba(124, 255, 124, 0.6);
-  background: rgba(2, 3, 7, 0.35);
+  background: rgba(2, 3, 7, 0.85);
+}
+
+.hud-land-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 80px;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ffff44;
+  text-shadow: 0 0 12px rgba(255, 255, 68, 0.6);
+  border: 2px solid rgba(255, 255, 68, 0.7);
+  background: rgba(2, 3, 7, 0.9);
+  animation: land-pulse 1s infinite;
+}
+
+@keyframes land-pulse {
+  0%, 100% { opacity: 1; border-color: rgba(255, 255, 68, 0.7); }
+  50% { opacity: 0.7; border-color: rgba(255, 255, 68, 0.4); }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -252,7 +274,7 @@ canvas {
 
 .hud-capital-panel {
   position: absolute;
-  top: 80px;
+  top: 120px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -260,8 +282,9 @@ canvas {
   gap: 8px;
   padding: 12px 16px;
   border: 1px solid rgba(255, 136, 68, 0.6);
-  background: rgba(2, 3, 7, 0.75);
+  background: rgba(2, 3, 7, 0.92);
   min-width: 280px;
+  z-index: 5;
 }
 
 .hud-capital-title {

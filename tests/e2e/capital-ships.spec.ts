@@ -64,14 +64,14 @@ test("Star Destroyer mission spawns capital ship and TIE escort", async ({ page 
   // Verify capital ship spawned
   await page.waitForFunction(() => (window.__xwingz?.capitalShipCount ?? 0) >= 1, null, { timeout: 10_000 });
 
-  // Verify TIE escort spawned
-  await page.waitForFunction(() => (window.__xwingz?.targetCount ?? 0) >= 6, null, { timeout: 10_000 });
+  // Verify TIE escort spawned (now 12 TIEs as intercept force)
+  await page.waitForFunction(() => (window.__xwingz?.targetCount ?? 0) >= 10, null, { timeout: 10_000 });
 
   // Verify initial phase is approach
   await page.waitForFunction(() => window.__xwingz?.starDestroyerPhase === "approach", null, { timeout: 5_000 });
 
-  // Verify HUD shows mission objective (initial message contains STAR DESTROYER or CLEAR TIES)
-  await expect(page.locator("#hud-mission")).toContainText(/STAR DESTROYER|CLEAR TIE|APPROACH/);
+  // Verify HUD shows mission objective
+  await expect(page.locator("#hud-mission")).toContainText(/RED SQUADRON|TIE FIGHTER|ATTACK/);
 });
 
 // Note: Phase transition test is flaky due to timing - turrets may shoot player down

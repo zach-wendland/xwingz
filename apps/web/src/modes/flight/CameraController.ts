@@ -4,7 +4,7 @@
  */
 
 import * as THREE from "three";
-import { Transform, Ship } from "@xwingz/gameplay";
+import { Ship } from "@xwingz/gameplay";
 import type { ModeContext } from "../types";
 import type { SpaceInputState } from "@xwingz/gameplay";
 

@@ -144,34 +144,159 @@ export function getAssetLoader(options?: AssetLoaderOptions): AssetLoader {
   return defaultLoader;
 }
 
+// Base path for Kenney Space Kit models
+const KENNEY_BASE = 'capital-ships/kenney_space-kit/Models/GLTF format/';
+
 // Asset path constants for the Kenney Space Kit
 export const KENNEY_ASSETS = {
-  // Ships
-  CRAFT_CARGO_A: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_cargoA.glb',
-  CRAFT_CARGO_B: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_cargoB.glb',
-  CRAFT_MINER: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_miner.glb',
-  CRAFT_RACER: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_racer.glb',
-  CRAFT_SPEEDER_A: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_speederA.glb',
-  CRAFT_SPEEDER_B: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_speederB.glb',
-  CRAFT_SPEEDER_C: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_speederC.glb',
-  CRAFT_SPEEDER_D: 'capital-ships/kenney_space-kit/Models/GLTF format/craft_speederD.glb',
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Ships & Vehicles
+  // ─────────────────────────────────────────────────────────────────────────────
+  CRAFT_CARGO_A: `${KENNEY_BASE}craft_cargoA.glb`,
+  CRAFT_CARGO_B: `${KENNEY_BASE}craft_cargoB.glb`,
+  CRAFT_MINER: `${KENNEY_BASE}craft_miner.glb`,
+  CRAFT_RACER: `${KENNEY_BASE}craft_racer.glb`,
+  CRAFT_SPEEDER_A: `${KENNEY_BASE}craft_speederA.glb`,
+  CRAFT_SPEEDER_B: `${KENNEY_BASE}craft_speederB.glb`,
+  CRAFT_SPEEDER_C: `${KENNEY_BASE}craft_speederC.glb`,
+  CRAFT_SPEEDER_D: `${KENNEY_BASE}craft_speederD.glb`,
+  ROVER: `${KENNEY_BASE}rover.glb`,
 
-  // Turrets
-  TURRET_SINGLE: 'capital-ships/kenney_space-kit/Models/GLTF format/turret_single.glb',
-  TURRET_DOUBLE: 'capital-ships/kenney_space-kit/Models/GLTF format/turret_double.glb',
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Turrets & Weapons
+  // ─────────────────────────────────────────────────────────────────────────────
+  TURRET_SINGLE: `${KENNEY_BASE}turret_single.glb`,
+  TURRET_DOUBLE: `${KENNEY_BASE}turret_double.glb`,
+  WEAPON_GUN: `${KENNEY_BASE}weapon_gun.glb`,
+  WEAPON_RIFLE: `${KENNEY_BASE}weapon_rifle.glb`,
 
+  // ─────────────────────────────────────────────────────────────────────────────
   // Rockets/Projectiles
-  ROCKET_BASE_A: 'capital-ships/kenney_space-kit/Models/GLTF format/rocket_baseA.glb',
-  ROCKET_BASE_B: 'capital-ships/kenney_space-kit/Models/GLTF format/rocket_baseB.glb',
+  // ─────────────────────────────────────────────────────────────────────────────
+  ROCKET_BASE_A: `${KENNEY_BASE}rocket_baseA.glb`,
+  ROCKET_BASE_B: `${KENNEY_BASE}rocket_baseB.glb`,
+  ROCKET_FINS_A: `${KENNEY_BASE}rocket_finsA.glb`,
+  ROCKET_FINS_B: `${KENNEY_BASE}rocket_finsB.glb`,
+  ROCKET_TOP_A: `${KENNEY_BASE}rocket_topA.glb`,
+  ROCKET_TOP_B: `${KENNEY_BASE}rocket_topB.glb`,
 
-  // Hangars
-  HANGAR_LARGE_A: 'capital-ships/kenney_space-kit/Models/GLTF format/hangar_largeA.glb',
-  HANGAR_LARGE_B: 'capital-ships/kenney_space-kit/Models/GLTF format/hangar_largeB.glb',
-  HANGAR_SMALL_A: 'capital-ships/kenney_space-kit/Models/GLTF format/hangar_smallA.glb',
-  HANGAR_SMALL_B: 'capital-ships/kenney_space-kit/Models/GLTF format/hangar_smallB.glb',
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Hangars & Gates
+  // ─────────────────────────────────────────────────────────────────────────────
+  HANGAR_LARGE_A: `${KENNEY_BASE}hangar_largeA.glb`,
+  HANGAR_LARGE_B: `${KENNEY_BASE}hangar_largeB.glb`,
+  HANGAR_SMALL_A: `${KENNEY_BASE}hangar_smallA.glb`,
+  HANGAR_SMALL_B: `${KENNEY_BASE}hangar_smallB.glb`,
+  HANGAR_ROUND_A: `${KENNEY_BASE}hangar_roundA.glb`,
+  HANGAR_ROUND_B: `${KENNEY_BASE}hangar_roundB.glb`,
+  HANGAR_ROUND_GLASS: `${KENNEY_BASE}hangar_roundGlass.glb`,
+  GATE_COMPLEX: `${KENNEY_BASE}gate_complex.glb`,
+  GATE_SIMPLE: `${KENNEY_BASE}gate_simple.glb`,
 
-  // Space environment
-  METEOR: 'capital-ships/kenney_space-kit/Models/GLTF format/meteor.glb',
-  METEOR_DETAILED: 'capital-ships/kenney_space-kit/Models/GLTF format/meteor_detailed.glb',
-  CRATER: 'capital-ships/kenney_space-kit/Models/GLTF format/crater.glb',
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Corridors (Echo Base interiors)
+  // ─────────────────────────────────────────────────────────────────────────────
+  CORRIDOR: `${KENNEY_BASE}corridor.glb`,
+  CORRIDOR_CORNER: `${KENNEY_BASE}corridor_corner.glb`,
+  CORRIDOR_CORNER_ROUND: `${KENNEY_BASE}corridor_cornerRound.glb`,
+  CORRIDOR_CROSS: `${KENNEY_BASE}corridor_cross.glb`,
+  CORRIDOR_DETAILED: `${KENNEY_BASE}corridor_detailed.glb`,
+  CORRIDOR_END: `${KENNEY_BASE}corridor_end.glb`,
+  CORRIDOR_OPEN: `${KENNEY_BASE}corridor_open.glb`,
+  CORRIDOR_SPLIT: `${KENNEY_BASE}corridor_split.glb`,
+  CORRIDOR_WALL: `${KENNEY_BASE}corridor_wall.glb`,
+  CORRIDOR_WINDOW: `${KENNEY_BASE}corridor_window.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Terrain & Rocks (Hoth ice plains)
+  // ─────────────────────────────────────────────────────────────────────────────
+  ROCK: `${KENNEY_BASE}rock.glb`,
+  ROCK_LARGE_A: `${KENNEY_BASE}rock_largeA.glb`,
+  ROCK_LARGE_B: `${KENNEY_BASE}rock_largeB.glb`,
+  ROCK_CRYSTALS: `${KENNEY_BASE}rock_crystals.glb`,
+  ROCK_CRYSTALS_LARGE_A: `${KENNEY_BASE}rock_crystalsLargeA.glb`,
+  ROCK_CRYSTALS_LARGE_B: `${KENNEY_BASE}rock_crystalsLargeB.glb`,
+  ROCKS_SMALL_A: `${KENNEY_BASE}rocks_smallA.glb`,
+  ROCKS_SMALL_B: `${KENNEY_BASE}rocks_smallB.glb`,
+  TERRAIN: `${KENNEY_BASE}terrain.glb`,
+  TERRAIN_RAMP: `${KENNEY_BASE}terrain_ramp.glb`,
+  TERRAIN_RAMP_LARGE: `${KENNEY_BASE}terrain_rampLarge.glb`,
+  TERRAIN_SIDE: `${KENNEY_BASE}terrain_side.glb`,
+  TERRAIN_SIDE_CLIFF: `${KENNEY_BASE}terrain_sideCliff.glb`,
+  TERRAIN_SIDE_CORNER: `${KENNEY_BASE}terrain_sideCorner.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Craters & Space Environment
+  // ─────────────────────────────────────────────────────────────────────────────
+  CRATER: `${KENNEY_BASE}crater.glb`,
+  CRATER_LARGE: `${KENNEY_BASE}craterLarge.glb`,
+  METEOR: `${KENNEY_BASE}meteor.glb`,
+  METEOR_DETAILED: `${KENNEY_BASE}meteor_detailed.glb`,
+  METEOR_HALF: `${KENNEY_BASE}meteor_half.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Platforms (trench fortifications)
+  // ─────────────────────────────────────────────────────────────────────────────
+  PLATFORM_CENTER: `${KENNEY_BASE}platform_center.glb`,
+  PLATFORM_CORNER: `${KENNEY_BASE}platform_corner.glb`,
+  PLATFORM_CORNER_OPEN: `${KENNEY_BASE}platform_cornerOpen.glb`,
+  PLATFORM_CORNER_ROUND: `${KENNEY_BASE}platform_cornerRound.glb`,
+  PLATFORM_END: `${KENNEY_BASE}platform_end.glb`,
+  PLATFORM_HIGH: `${KENNEY_BASE}platform_high.glb`,
+  PLATFORM_LARGE: `${KENNEY_BASE}platform_large.glb`,
+  PLATFORM_LONG: `${KENNEY_BASE}platform_long.glb`,
+  PLATFORM_LOW: `${KENNEY_BASE}platform_low.glb`,
+  PLATFORM_SIDE: `${KENNEY_BASE}platform_side.glb`,
+  PLATFORM_SMALL: `${KENNEY_BASE}platform_small.glb`,
+  PLATFORM_STRAIGHT: `${KENNEY_BASE}platform_straight.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Machinery & Generators (shield generator, base equipment)
+  // ─────────────────────────────────────────────────────────────────────────────
+  MACHINE_BARREL: `${KENNEY_BASE}machine_barrel.glb`,
+  MACHINE_BARREL_LARGE: `${KENNEY_BASE}machine_barrelLarge.glb`,
+  MACHINE_GENERATOR: `${KENNEY_BASE}machine_generator.glb`,
+  MACHINE_GENERATOR_LARGE: `${KENNEY_BASE}machine_generatorLarge.glb`,
+  MACHINE_WIRELESS: `${KENNEY_BASE}machine_wireless.glb`,
+  SATELLITE_DISH: `${KENNEY_BASE}satelliteDish.glb`,
+  SATELLITE_DISH_DETAILED: `${KENNEY_BASE}satelliteDish_detailed.glb`,
+  SATELLITE_DISH_LARGE: `${KENNEY_BASE}satelliteDish_large.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Props & Objects
+  // ─────────────────────────────────────────────────────────────────────────────
+  BARREL: `${KENNEY_BASE}barrel.glb`,
+  BARRELS: `${KENNEY_BASE}barrels.glb`,
+  BARRELS_RAIL: `${KENNEY_BASE}barrels_rail.glb`,
+  BONES: `${KENNEY_BASE}bones.glb`,
+  DESK_COMPUTER: `${KENNEY_BASE}desk_computer.glb`,
+  DESK_CHAIR: `${KENNEY_BASE}desk_chair.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Characters
+  // ─────────────────────────────────────────────────────────────────────────────
+  ALIEN: `${KENNEY_BASE}alien.glb`,
+  ASTRONAUT_A: `${KENNEY_BASE}astronautA.glb`,
+  ASTRONAUT_B: `${KENNEY_BASE}astronautB.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Structures & Supports
+  // ─────────────────────────────────────────────────────────────────────────────
+  STRUCTURE: `${KENNEY_BASE}structure.glb`,
+  STRUCTURE_CLOSED: `${KENNEY_BASE}structure_closed.glb`,
+  STRUCTURE_DETAILED: `${KENNEY_BASE}structure_detailed.glb`,
+  SUPPORTS_HIGH: `${KENNEY_BASE}supports_high.glb`,
+  SUPPORTS_LOW: `${KENNEY_BASE}supports_low.glb`,
+  STAIRS: `${KENNEY_BASE}stairs.glb`,
+  STAIRS_CORNER: `${KENNEY_BASE}stairs_corner.glb`,
+  STAIRS_SHORT: `${KENNEY_BASE}stairs_short.glb`,
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Pipes (base infrastructure)
+  // ─────────────────────────────────────────────────────────────────────────────
+  PIPE_CORNER: `${KENNEY_BASE}pipe_corner.glb`,
+  PIPE_CROSS: `${KENNEY_BASE}pipe_cross.glb`,
+  PIPE_END: `${KENNEY_BASE}pipe_end.glb`,
+  PIPE_STRAIGHT: `${KENNEY_BASE}pipe_straight.glb`,
+  PIPE_SPLIT: `${KENNEY_BASE}pipe_split.glb`,
 } as const;

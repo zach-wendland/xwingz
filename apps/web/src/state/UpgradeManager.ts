@@ -78,9 +78,9 @@ export function computePlayerStats(upgrades: Upgrades): PlayerStats {
     maxSpeed: base.maxSpeed * (1 + engineLvl * 0.06),
     accel: base.accel * (1 + engineLvl * 0.08),
     turnRate: base.turnRate * (1 + maneuverLvl * 0.08),
-    maxSp: 60 + shieldLvl * 14,
-    regen: 6 + shieldLvl * 0.8,
-    maxHp: base.hp + hullLvl * 16,
+    maxSp: 420 + shieldLvl * 98,           // 7x base for better survivability
+    regen: 30 + shieldLvl * 5.6,           // 5x base regen to match higher shields
+    maxHp: 360 + hullLvl * 48,             // 3x base HP for better survivability
     damage: base.damage * (1 + laserLvl * 0.08),
     weaponCooldown: Math.max(0.06, base.weaponCooldown * (1 - laserLvl * 0.03)),
     projectileSpeed: base.projectileSpeed

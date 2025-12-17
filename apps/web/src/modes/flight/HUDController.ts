@@ -14,7 +14,6 @@ import {
   LaserWeapon,
   Targeting,
   HitRadius,
-  Team,
   CapitalShipV2,
   Subsystem,
   getTorpedoState,
@@ -31,16 +30,6 @@ import type {
   ScreenPoint
 } from "./types";
 
-// Local copies of const enums
-const SubsystemType = {
-  Bridge: 0,
-  ShieldGen: 1,
-  Engines: 2,
-  Targeting: 3,
-  Power: 4,
-  Hangar: 5
-} as const;
-
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));
 }
@@ -53,7 +42,6 @@ export class HUDController {
   private lockTargetEid = -1;
 
   // Temp vectors for HUD calculations (reused to avoid allocations)
-  private tmpMat = new THREE.Matrix4();
   private tmpNdc = new THREE.Vector3();
   private tmpHudTargetPos = new THREE.Vector3();
   private tmpHudLeadPos = new THREE.Vector3();

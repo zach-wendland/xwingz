@@ -46,7 +46,6 @@ export class MapMode implements ModeHandler {
 
   // Selection state
   private selectedSystem: SystemDef | null = null;
-  private selectedPlanetIndex = -1;
 
   // Input helpers
   private raycaster = new THREE.Raycaster();
@@ -129,7 +128,6 @@ export class MapMode implements ModeHandler {
     clearPlanetTextureCache();
 
     this.selectedSystem = null;
-    this.selectedPlanetIndex = -1;
   }
 
   private buildGalaxy(ctx: ModeContext): void {
@@ -377,7 +375,6 @@ export class MapMode implements ModeHandler {
 
         const hits = this.raycaster.intersectObject(planetMesh);
         if (hits.length > 0) {
-          this.selectedPlanetIndex = i;
           const planetDef = PLANETS[i]!;
           const sys = planetToSystem(planetDef);
           this.selectedSystem = sys;

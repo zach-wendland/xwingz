@@ -61,7 +61,7 @@ export interface PreservedPlayerState {
  */
 export type ModeTransitionData =
   | { type: "flight"; system: SystemDef; scenario: FlightScenario }
-  | { type: "ground" }
+  | { type: "ground"; scenario?: GroundScenario }
   | { type: "map" }
   | { type: "conquest" }
   | {
@@ -105,7 +105,12 @@ export interface ModeHandler {
 /**
  * Flight mode specific state (passed via data on transition)
  */
-export type FlightScenario = "sandbox" | "yavin_defense" | "conquest" | "destroy_star_destroyer";
+export type FlightScenario = "sandbox" | "yavin_defense" | "conquest" | "destroy_star_destroyer" | "hoth_speeder";
+
+/**
+ * Ground mode specific scenarios
+ */
+export type GroundScenario = "default" | "hoth_defense";
 
 export interface FlightModeData {
   type: "flight";
@@ -149,6 +154,7 @@ export interface GroundFromFlightData {
   playerState: PreservedPlayerState;
   planetIndex: number;
   system?: SystemDef | null; // System to return to on launch
+  scenario?: GroundScenario; // Ground scenario to load
 }
 
 export function isFlightFromGroundTransition(data?: ModeTransitionData): data is FlightFromGroundData {

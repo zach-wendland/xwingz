@@ -97,13 +97,13 @@ export function spawnPlayerShip(world: IWorld, params?: Partial<{ maxSpeed: numb
 
   Targeting.targetEid[eid] = -1;
 
-  Health.hp[eid] = 120;
-  Health.maxHp[eid] = 120;
+  Health.hp[eid] = 360;    // 3x for better survivability against turrets
+  Health.maxHp[eid] = 360;
   HitRadius.r[eid] = 11;
 
-  Shield.maxSp[eid] = 60;
-  Shield.sp[eid] = 60;
-  Shield.regenRate[eid] = 6;
+  Shield.maxSp[eid] = 420;  // 7x for better survivability against turrets
+  Shield.sp[eid] = 420;
+  Shield.regenRate[eid] = 30;  // Increased regen to match higher shield pool
   Shield.lastHit[eid] = 999;
 
   return eid;

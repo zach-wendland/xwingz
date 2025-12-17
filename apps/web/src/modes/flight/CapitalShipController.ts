@@ -4,7 +4,7 @@
  */
 
 import * as THREE from "three";
-import { hasComponent, defineQuery } from "bitecs";
+import { hasComponent } from "bitecs";
 import {
   Transform,
   CapitalShipV2,

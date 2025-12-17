@@ -447,11 +447,11 @@ function getWeakPointLayout(shipClass: ShipClass): Array<{ offsetX: number; offs
 
 function getTurretDamage(type: TurretType): number {
   switch (type) {
-    case TurretType.PointDefense: return 3;  // Reduced from 8
-    case TurretType.Medium: return 6;        // Reduced from 15
-    case TurretType.Heavy: return 15;        // Reduced from 40
-    case TurretType.Ion: return 10;          // Reduced from 25
-    default: return 5;
+    case TurretType.PointDefense: return 1;  // Drastically reduced for gameplay balance
+    case TurretType.Medium: return 2;        // Drastically reduced for gameplay balance
+    case TurretType.Heavy: return 4;         // Drastically reduced for gameplay balance
+    case TurretType.Ion: return 3;           // Drastically reduced for gameplay balance
+    default: return 1;
   }
 }
 

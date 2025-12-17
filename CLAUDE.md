@@ -72,9 +72,13 @@ rm -rf .turbo                               # Clear Turborepo cache
   - `capital-components.ts`, `capital-systems.ts` - Capital ship subsystems (shields, turrets, hangars)
   - `components.ts` - Fighter/bomber ECS components
   - `systems.ts` - Per-frame systems (movement, combat, spawning)
+  - `objective-types.ts`, `objective-tracker.ts`, `kill-tracker.ts` - Mission objective system
 - `ground/` - Infantry combat (Battlefront-style)
   - `components.ts` - Soldier, CharacterController, BlasterWeapon, CommandPost
   - `systems.ts` - Ground movement, capture points, AI state machine
+  - `hoth-components.ts` - Hoth-specific: ATATWalker, TurretEmplacement, Snowtrooper
+  - `atat-system.ts` - AT-AT walker, targeting, weapon, trip systems
+  - `turret-system.ts` - Turret emplacement and AI systems
 - `conquest/` - Galactic conquest campaign
   - `components.ts` - ConquestPlanet, ConquestFleet, GroundForce, BattlePending
   - `systems.ts` - Fleet movement, resource generation, battle resolution
@@ -90,18 +94,30 @@ rm -rf .turbo                               # Clear Turborepo cache
 **Flight Mode Scenario System (`apps/web/src/modes/flight/`):**
 FlightMode uses a modular scenario handler pattern. Each scenario implements `FlightScenarioHandler`:
 - `SandboxScenario.ts` - Free roam with random spawns
-- `YavinDefenseScenario.ts` - Planetary defense with terrain, fog, and base HP
-- `StarDestroyerScenario.ts` - Capital ship assault with wingmen, phase progression
+- `YavinDefenseScenario.ts` - Planetary defense with terrain, fog, environmental props
+- `StarDestroyerScenario.ts` - Capital ship assault with wingmen, phase progression, debris field
+- `HothSpeederScenario.ts` - T-47 snowspeeder tow cable mini-game (circles AT-AT legs)
 
 Scenario handlers implement: `enter()`, `tick()`, `handleHyperspace()`, `updateHud()`, `getMissionMessage()`, `canLand()`, `exit()`
 
 Supporting modules:
 - `FlightScenarioTypes.ts` - Shared types (`FlightContext`, `FlightHudElements`, mission state types)
+- `FlightShared.ts` - Shared utilities (camera, targeting, weapons)
 - `SceneBuilder.ts` - Starfield, planetary terrain generation
 - `CameraController.ts` - Third-person chase camera
 - `CapitalShipController.ts` - Capital ship mesh/entity management
 - `HUDController.ts` - HUD element creation and bracket positioning
 - `E2EHelpers.ts` - Test hooks exposed on `window.__xwingz` and `window.__xwingzTest`
+- `ObjectiveHud.ts` - DOM-based objective progress display
+- `AnnouncementSystem.ts` - Objective completion overlay announcements
+- `RadioChatterSystem.ts` - Text-based radio dialogue display
+
+**Ground Mode Scenario System (`apps/web/src/modes/ground/`):**
+GroundMode mirrors the flight scenario pattern. Each scenario implements `GroundScenarioHandler`:
+- `DefaultScenario.ts` - Battlefront-style command post capture
+- `HothDefenseScenario.ts` - Two-phase mega mission: outdoor trench defense → interior Echo Base escort to Millennium Falcon
+
+Scenario handlers implement: `enter()`, `tick()`, `updateHud()`, `getMissionMessage()`, `canTransition()`, `exit()`
 
 **E2E Testing (`tests/e2e/`):**
 Tests use Playwright with SwiftShader for headless WebGL. The `?e2e=1` URL param enables test helpers:
@@ -117,6 +133,82 @@ window.__xwingz?.enterFlight(system, scenario)
 window.__xwingzTest?.killAllEnemies()
 window.__xwingzTest?.destroyStarDestroyer()
 ```
+
+## Mission Objective System
+
+The gameplay package provides a generic, reusable objective tracking system used by flight and ground scenarios.
+
+**Core Types (`@xwingz/gameplay`):**
+```typescript
+import {
+  ObjectiveTracker,
+  KillTracker,
+  ObjectiveDefinition,
+  ObjectiveContext,
+  ObjectiveStatus,
+  TriggerType,
+  ProgressIndicatorType,
+  createDefaultObjectiveContext,
+  missionStartTrigger,
+  objectiveCompleteTrigger,
+  killCountTrigger
+} from "@xwingz/gameplay";
+```
+
+**ObjectiveTracker Usage:**
+```typescript
+const tracker = new ObjectiveTracker(objectiveDefinitions);
+tracker.initialize();  // Not start()
+
+// Per-frame update - returns events
+const events = tracker.tick(dt, objectiveContext);  // Returns ObjectiveEvent[]
+
+// Query state
+tracker.getActiveObjective();
+tracker.getObjectivesByStatus(ObjectiveStatus.COMPLETED);  // Not getCompletedObjectives()
+tracker.getOptionalObjectives();
+```
+
+**KillTracker Usage:**
+```typescript
+const killTracker = new KillTracker(shieldThreshold);
+killTracker.recordKill("tie_fighter", wave);
+killTracker.getTrackingData();  // Returns full KillTrackingData object
+killTracker.getStreak();  // Not getCurrentStreak()
+```
+
+**HUD Systems (`apps/web/src/modes/flight/`):**
+```typescript
+import { ObjectiveHud } from "./ObjectiveHud";
+import { AnnouncementSystem, newObjectiveAnnouncement } from "./AnnouncementSystem";
+import { RadioChatterSystem, RadioSpeaker } from "./RadioChatterSystem";
+
+// Create with container (use ctx.overlay, NOT ctx.container)
+const hud = new ObjectiveHud(ctx.overlay);
+const announcements = new AnnouncementSystem(ctx.overlay);
+const radio = new RadioChatterSystem(ctx.overlay);
+
+// Per-frame updates
+hud.update(tracker, dt);
+announcements.tick(dt);  // Not update()
+radio.tick(dt);  // Not update()
+
+// Queue messages
+announcements.announce(newObjectiveAnnouncement("New Objective", "Subtitle"));
+radio.say("Message text", RadioSpeaker.COMMAND);  // Not queue()
+
+// Cleanup
+hud.dispose();
+announcements.dispose();
+radio.dispose();
+```
+
+**TriggerType Options:**
+- `MISSION_START`, `OBJECTIVE_COMPLETE` - Sequencing triggers
+- `KILL_COUNT`, `KILL_ALL`, `KILL_STREAK` - Kill-based triggers
+- `SUBSYSTEMS_DESTROYED`, `ENTITY_DESTROYED`, `ENTITY_HEALTH_BELOW` - Target state triggers
+- `REACH_LOCATION`, `INTERACT`, `ESCORT_ALIVE` - Location/escort triggers
+- `COMPOUND` - AND logic for multiple conditions
 
 ## Deterministic RNG
 
@@ -157,3 +249,10 @@ When creating ship visuals:
 - Empire faction UI colors: Imperial blue/gray (`0x4488ff`), NOT green - green is for lasers only
 - Rebel faction: orange/red tones (`0xff6644`)
 - Neutral/contested: gray (`0x888888`)
+
+Hoth color palette:
+- Snow: `0xf0f4ff`
+- Ice caves: `0xaaccff`
+- Rebel orange flight suits: `0xff6644`
+- Imperial gray: `0x666677`
+- AT-AT armor: `0x888899`

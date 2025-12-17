@@ -5,3 +5,6 @@ export * from "./systems";
 export * from "./capital-systems";
 export * from "./coruscant-systems";
 export * from "./coruscant-runtime";
+export * from "./objective-types";
+export * from "./objective-tracker";
+export * from "./kill-tracker";

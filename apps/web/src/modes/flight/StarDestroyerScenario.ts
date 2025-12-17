@@ -27,7 +27,19 @@ import {
   removeCapitalShipV2,
   consumeTurretFireEvents,
   consumeSubsystemDestroyedEvents,
-  rebuildFighterSpatialHash
+  rebuildFighterSpatialHash,
+  // Objective system
+  ObjectiveTracker,
+  KillTracker,
+  type ObjectiveDefinition,
+  type ObjectiveContext,
+  type ObjectiveEvent,
+  ObjectiveStatus,
+  ObjectiveEventType,
+  TriggerType,
+  ProgressIndicatorType,
+  ObjectivePriority,
+  createDefaultObjectiveContext
 } from "@xwingz/gameplay";
 import type { ModeContext } from "../types";
 import { disposeObject } from "../../rendering/MeshManager";
@@ -51,6 +63,16 @@ import {
   clearTargetBracket,
   SubsystemType
 } from "./FlightShared";
+import { ObjectiveHud } from "./ObjectiveHud";
+import {
+  AnnouncementSystem,
+  newObjectiveAnnouncement,
+  objectiveCompleteAnnouncement,
+  milestoneAnnouncement,
+  missionCompleteAnnouncement,
+  missionFailedAnnouncement
+} from "./AnnouncementSystem";
+import { RadioChatterSystem, RadioSpeaker, STAR_DESTROYER_RADIO } from "./RadioChatterSystem";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Star Destroyer Context
@@ -67,6 +89,113 @@ export interface StarDestroyerContext {
   assetLoader: AssetLoader;
   assetsReady: boolean;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Star Destroyer Objective Definitions
+// ─────────────────────────────────────────────────────────────────────────────
+
+const STAR_DESTROYER_OBJECTIVES: ObjectiveDefinition[] = [
+  {
+    id: "sd_obj_1",
+    name: "Clear Fighter Screen",
+    description: "Destroy the TIE Fighter intercept force protecting the Star Destroyer",
+    hudText: "CLEAR TIE SCREEN: 0/12",
+    hudTextActive: "ENGAGING TIE FIGHTERS",
+    hudTextComplete: "FIGHTER SCREEN ELIMINATED",
+    phase: "approach",
+    sequence: 1,
+    priority: ObjectivePriority.NORMAL,
+    triggerStart: { type: TriggerType.MISSION_START },
+    triggerComplete: { type: TriggerType.KILL_COUNT, targetType: "tie_fighter", count: 12 },
+    progressType: ProgressIndicatorType.NUMERIC_COUNTER,
+    progressMax: 12,
+    rewardCredits: 200,
+    isOptional: false,
+    radioOnStart: STAR_DESTROYER_RADIO.approach,
+    radioOnComplete: ["Fighter screen destroyed! Move in on the shields!"],
+    radioMilestones: {
+      "25": "Good shooting!",
+      "50": "Halfway there!",
+      "75": "Almost clear!"
+    }
+  },
+  {
+    id: "sd_obj_2",
+    name: "Disable Shield Generators",
+    description: "Destroy the dorsal shield generators to expose the Star Destroyer's hull",
+    hudText: "DESTROY SHIELD GENERATORS: 0/2",
+    hudTextActive: "TARGETING SHIELD GENERATORS",
+    hudTextComplete: "SHIELDS DOWN",
+    phase: "shields",
+    sequence: 2,
+    priority: ObjectivePriority.HIGH,
+    triggerStart: { type: TriggerType.OBJECTIVE_COMPLETE, objectiveId: "sd_obj_1" },
+    triggerComplete: { type: TriggerType.SUBSYSTEMS_DESTROYED, subsystemTypes: ["shield_gen"], count: 2 },
+    progressType: ProgressIndicatorType.CIRCULAR_PROGRESS,
+    progressMax: 2,
+    rewardCredits: 400,
+    isOptional: false,
+    radioOnStart: STAR_DESTROYER_RADIO.shields,
+    radioOnComplete: ["Shields are down! Target their critical systems!"]
+  },
+  {
+    id: "sd_obj_3",
+    name: "Destroy Critical Subsystems",
+    description: "Target the bridge, engines, or power core to cripple the Star Destroyer",
+    hudText: "SUBSYSTEMS: 0/3 CRITICAL",
+    hudTextActive: "ATTACKING SUBSYSTEMS",
+    hudTextComplete: "SUBSYSTEMS CRIPPLED",
+    phase: "subsystems",
+    sequence: 3,
+    priority: ObjectivePriority.HIGH,
+    triggerStart: { type: TriggerType.OBJECTIVE_COMPLETE, objectiveId: "sd_obj_2" },
+    triggerComplete: { type: TriggerType.SUBSYSTEMS_DESTROYED, count: 3, anyCombination: true },
+    progressType: ProgressIndicatorType.NUMERIC_COUNTER,
+    progressMax: 3,
+    rewardCredits: 500,
+    isOptional: false,
+    radioOnStart: STAR_DESTROYER_RADIO.subsystems,
+    radioOnComplete: ["She's crippled! Finish her off!"]
+  },
+  {
+    id: "sd_obj_4",
+    name: "Destroy the Star Destroyer",
+    description: "Finish off the crippled Star Destroyer before reinforcements arrive",
+    hudText: "DESTROY STAR DESTROYER",
+    hudTextActive: "ATTACKING HULL",
+    hudTextComplete: "STAR DESTROYER DESTROYED",
+    phase: "final",
+    sequence: 4,
+    priority: ObjectivePriority.CRITICAL,
+    triggerStart: { type: TriggerType.OBJECTIVE_COMPLETE, objectiveId: "sd_obj_3" },
+    triggerComplete: { type: TriggerType.ENTITY_DESTROYED, entity: "star_destroyer" },
+    progressType: ProgressIndicatorType.PROGRESS_BAR,
+    progressMax: 100,
+    rewardCredits: 1000,
+    isOptional: false,
+    radioOnStart: STAR_DESTROYER_RADIO.final,
+    radioOnComplete: ["That's a kill! Star Destroyer destroyed!"]
+  },
+  {
+    id: "sd_bonus_1",
+    name: "No Casualties",
+    description: "Complete the mission without losing any wingmen",
+    hudText: "BONUS: PROTECT SQUADRON",
+    hudTextActive: "WINGMEN ALIVE: 5/5",
+    hudTextComplete: "SQUADRON INTACT!",
+    phase: "combat",
+    sequence: 99,
+    priority: ObjectivePriority.NORMAL,
+    triggerStart: { type: TriggerType.MISSION_START },
+    triggerComplete: { type: TriggerType.ALLIES_ALIVE, count: 5 },
+    triggerFail: { type: TriggerType.ALLY_DEATH },
+    progressType: ProgressIndicatorType.NONE,
+    progressMax: 1,
+    rewardCredits: 750,
+    isOptional: true,
+    radioOnComplete: ["All wings accounted for! Outstanding leadership!"]
+  }
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Star Destroyer Scenario Handler
@@ -92,6 +221,16 @@ export class StarDestroyerScenario {
 
   // Mission state
   private mission: StarDestroyerMissionState | null = null;
+  private missionTime = 0;
+  private initialWingmenCount = 5;
+  private wingmenLost = 0;
+
+  // Objective system
+  private objectiveTracker: ObjectiveTracker | null = null;
+  private killTracker: KillTracker | null = null;
+  private objectiveHud: ObjectiveHud | null = null;
+  private announcements: AnnouncementSystem | null = null;
+  private radioChatter: RadioChatterSystem | null = null;
 
   // Targeting state
   private lockState: TargetBracketState = { lockValue: 0, lockTargetEid: -1 };
@@ -101,6 +240,19 @@ export class StarDestroyerScenario {
 
   enter(sdctx: StarDestroyerContext): void {
     this.lockState = { lockValue: 0, lockTargetEid: -1 };
+    this.missionTime = 0;
+    this.wingmenLost = 0;
+
+    // Initialize objective system
+    this.objectiveTracker = new ObjectiveTracker(STAR_DESTROYER_OBJECTIVES);
+    this.killTracker = new KillTracker(80);
+    this.objectiveTracker.initialize();
+
+    // Initialize HUD systems
+    const hudContainer = sdctx.ctx.hud;
+    this.objectiveHud = new ObjectiveHud(hudContainer);
+    this.announcements = new AnnouncementSystem(hudContainer);
+    this.radioChatter = new RadioChatterSystem(hudContainer);
 
     // Build starfield
     this.starfield = createStarfield(sdctx.currentSystem.seed);
@@ -111,10 +263,17 @@ export class StarDestroyerScenario {
 
     // Start mission
     this.startStarDestroyerMission(sdctx);
+
+    // Queue initial radio chatter
+    if (this.radioChatter) {
+      this.radioChatter.queueMessages(STAR_DESTROYER_RADIO.approach, RadioSpeaker.WINGMAN, 5);
+    }
   }
 
   tick(sdctx: StarDestroyerContext, dt: number): boolean {
     if (!this.mission) return false;
+
+    this.missionTime += dt;
 
     // Sync targets (TIE fighters)
     const syncResult = syncTargets(
@@ -123,18 +282,37 @@ export class StarDestroyerScenario {
       sdctx.targetMeshes,
       sdctx.explosions
     );
+
+    // Track kills for objectives
+    if (syncResult.killedCount > 0 && sdctx.shipEid !== null) {
+      for (const _killedEid of syncResult.killedEids) {
+        this.killTracker?.recordKill("tie_fighter", 1);
+      }
+    }
+
     // Update array in place to preserve FlightMode's reference
     sdctx.targetEids.length = 0;
     sdctx.targetEids.push(...syncResult.targetEids);
 
-    // Sync allies (wingmen)
+    // Sync allies (wingmen) - track deaths
+    const prevAllyCount = this.allyEids.length;
     this.syncAllies(sdctx);
+    if (this.allyEids.length < prevAllyCount) {
+      this.wingmenLost += prevAllyCount - this.allyEids.length;
+    }
 
     // Sync capital ships
     this.syncCapitalShips(sdctx);
     this.syncTurretProjectiles(sdctx);
 
-    // Update mission phases
+    // Build objective context and update tracker
+    if (this.objectiveTracker && this.killTracker) {
+      const objContext = this.buildObjectiveContext(sdctx);
+      const events = this.objectiveTracker.tick(dt, objContext);
+      this.processObjectiveEvents(sdctx, events);
+    }
+
+    // Update mission phases (legacy - keep for compatibility)
     this.updateStarDestroyerMission(sdctx, dt);
 
     // Update message timer
@@ -142,7 +320,134 @@ export class StarDestroyerScenario {
       this.mission.messageTimer = Math.max(0, this.mission.messageTimer - dt);
     }
 
+    // Update HUD systems
+    this.announcements?.tick(dt);
+    this.radioChatter?.tick(dt);
+
     return false;
+  }
+
+  /**
+   * Build ObjectiveContext from current game state
+   */
+  private buildObjectiveContext(sdctx: StarDestroyerContext): ObjectiveContext {
+    const ctx = createDefaultObjectiveContext();
+    ctx.missionTime = this.missionTime;
+
+    // Kill tracking
+    if (this.killTracker) {
+      ctx.kills = this.killTracker.getTrackingData();
+    }
+
+    // Ally tracking
+    ctx.allies.alive = this.allyEids.length;
+    ctx.allies.started = this.initialWingmenCount;
+
+    // Player location
+    if (sdctx.shipEid !== null) {
+      ctx.location.playerPosition = {
+        x: Transform.x[sdctx.shipEid] ?? 0,
+        y: Transform.y[sdctx.shipEid] ?? 0,
+        z: Transform.z[sdctx.shipEid] ?? 0
+      };
+
+      // Player shield
+      if (hasComponent(sdctx.ctx.world, Shield, sdctx.shipEid)) {
+        ctx.playerShieldPercent = ((Shield.sp[sdctx.shipEid] ?? 0) / (Shield.maxSp[sdctx.shipEid] ?? 1)) * 100;
+      }
+    }
+
+    // Capital ship (Star Destroyer) status - use entities tracking
+    if (this.mission && hasComponent(sdctx.ctx.world, CapitalShipV2, this.mission.starDestroyerEid)) {
+      ctx.entities.capitalShipDestroyed = false;
+      ctx.entities.subsystemsDestroyed = this.mission.subsystemsDestroyed;
+      ctx.entities.shieldGensDestroyed = this.mission.shieldsDown ? 2 : 0;
+    } else {
+      ctx.entities.capitalShipDestroyed = true;
+      ctx.entities.subsystemsDestroyed = this.mission?.totalSubsystems ?? 0;
+      ctx.entities.shieldGensDestroyed = 2;
+    }
+
+    // Track completed objectives
+    if (this.objectiveTracker) {
+      const completed = this.objectiveTracker.getObjectivesByStatus(ObjectiveStatus.COMPLETED);
+      for (const obj of completed) {
+        ctx.completedObjectives.add(obj.definition.id);
+      }
+    }
+
+    return ctx;
+  }
+
+  /**
+   * Process objective events (announcements, radio, phase transitions)
+   */
+  private processObjectiveEvents(sdctx: StarDestroyerContext, events: ObjectiveEvent[]): void {
+    for (const event of events) {
+      switch (event.type) {
+        case ObjectiveEventType.OBJECTIVE_ACTIVATED:
+          if (event.objective?.definition.radioOnStart) {
+            this.radioChatter?.queueMessages(
+              event.objective.definition.radioOnStart,
+              RadioSpeaker.WINGMAN,
+              5
+            );
+          }
+          this.announcements?.announce(
+            newObjectiveAnnouncement(event.objective?.definition.name ?? "", event.message)
+          );
+          break;
+
+        case ObjectiveEventType.OBJECTIVE_COMPLETED:
+          if (event.objective?.definition.radioOnComplete) {
+            this.radioChatter?.queueMessages(
+              event.objective.definition.radioOnComplete,
+              RadioSpeaker.WINGMAN,
+              6
+            );
+          }
+          this.announcements?.announce(
+            objectiveCompleteAnnouncement(event.objective?.definition.hudTextComplete ?? "COMPLETE")
+          );
+
+          // Award credits
+          if (event.objective) {
+            sdctx.ctx.profile.credits += event.objective.definition.rewardCredits;
+            sdctx.ctx.scheduleSave();
+          }
+          break;
+
+        case ObjectiveEventType.OBJECTIVE_MILESTONE:
+          this.announcements?.announce(milestoneAnnouncement(event.message ?? ""));
+          break;
+
+        case ObjectiveEventType.OBJECTIVE_FAILED:
+          if (!event.objective?.definition.isOptional) {
+            this.mission!.phase = "fail";
+            this.mission!.message = "MISSION FAILED";
+            this.mission!.messageTimer = 8;
+            this.announcements?.announce(missionFailedAnnouncement(event.message));
+          }
+          break;
+
+        case ObjectiveEventType.MISSION_COMPLETE:
+          this.mission!.phase = "success";
+          this.mission!.message = `VICTORY  +${this.objectiveTracker?.getTotalCreditsEarned() ?? 0} CR`;
+          this.mission!.messageTimer = 6;
+          sdctx.ctx.profile.credits += this.mission!.rewardCredits;
+          sdctx.ctx.scheduleSave();
+          this.announcements?.announce(missionCompleteAnnouncement());
+          break;
+
+        case ObjectiveEventType.MISSION_FAILED:
+          this.mission!.phase = "fail";
+          this.mission!.message = "MISSION FAILED";
+          this.mission!.messageTimer = 8;
+          this.announcements?.announce(missionFailedAnnouncement(event.message));
+          sdctx.ctx.scheduleSave();
+          break;
+      }
+    }
   }
 
   handleHyperspace(_sdctx: StarDestroyerContext): boolean {
@@ -163,6 +468,11 @@ export class StarDestroyerScenario {
     updatePlayerHudValues(els, sdctx.shipEid, sdctx.ctx);
     updateSystemInfo(els, sdctx.currentSystem, sdctx.ctx.profile.credits);
 
+    // Update objective HUD
+    if (this.objectiveTracker && this.objectiveHud) {
+      this.objectiveHud.update(this.objectiveTracker, dt);
+    }
+
     // Mission message
     if (this.mission) {
       if (this.mission.messageTimer > 0) {
@@ -172,10 +482,10 @@ export class StarDestroyerScenario {
       } else if (this.mission.phase === "fail") {
         els.mission.textContent = "MISSION FAILED - PRESS H TO RESTART";
       } else {
-        const phaseText = this.mission.phase === "approach" ? "CLEAR TIES" :
-                         this.mission.phase === "shields" ? "DESTROY SHIELDS" :
-                         this.mission.phase === "subsystems" ? "TARGET SUBSYSTEMS" : "ATTACK HULL";
-        els.mission.textContent = `DESTROY STAR DESTROYER: ${phaseText}  ${this.mission.subsystemsDestroyed}/${this.mission.totalSubsystems} SYSTEMS`;
+        // Show active objective
+        const active = this.objectiveTracker?.getActiveObjective();
+        const objText = active ? active.definition.hudTextActive : "DESTROY STAR DESTROYER";
+        els.mission.textContent = `${objText}  ${this.mission.subsystemsDestroyed}/${this.mission.totalSubsystems} SYSTEMS`;
       }
     }
 
@@ -213,6 +523,18 @@ export class StarDestroyerScenario {
     this.clearCapitalShips(sdctx);
     this.clearAllies(sdctx);
     this.mission = null;
+
+    // Dispose HUD systems
+    this.objectiveHud?.dispose();
+    this.announcements?.dispose();
+    this.radioChatter?.dispose();
+    this.objectiveHud = null;
+    this.announcements = null;
+    this.radioChatter = null;
+    this.objectiveTracker = null;
+    this.killTracker = null;
+    this.missionTime = 0;
+    this.wingmenLost = 0;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

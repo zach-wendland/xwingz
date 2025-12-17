@@ -1,5 +1,6 @@
 /**
  * YavinDefenseScenario - Defend the Great Temple on Yavin 4
+ * Enhanced with 4 required objectives + 1 optional bonus objective
  */
 
 import * as THREE from "three";
@@ -19,7 +20,19 @@ import {
   Team,
   Transform,
   Velocity,
-  Targeting
+  Targeting,
+  // Objective system
+  ObjectiveTracker,
+  KillTracker,
+  type ObjectiveDefinition,
+  type ObjectiveContext,
+  type ObjectiveEvent,
+  ObjectiveStatus,
+  ObjectiveEventType,
+  TriggerType,
+  ProgressIndicatorType,
+  ObjectivePriority,
+  createDefaultObjectiveContext
 } from "@xwingz/gameplay";
 import type { ModeContext } from "../types";
 import { disposeObject } from "../../rendering/MeshManager";
@@ -39,6 +52,130 @@ import {
   updateTargetBracket,
   clearTargetBracket
 } from "./FlightShared";
+import { ObjectiveHud } from "./ObjectiveHud";
+import {
+  AnnouncementSystem,
+  newObjectiveAnnouncement,
+  objectiveCompleteAnnouncement,
+  milestoneAnnouncement,
+  missionCompleteAnnouncement,
+  missionFailedAnnouncement
+} from "./AnnouncementSystem";
+import { RadioChatterSystem, RadioSpeaker, YAVIN_RADIO } from "./RadioChatterSystem";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Yavin Objective Definitions
+// ─────────────────────────────────────────────────────────────────────────────
+
+const YAVIN_OBJECTIVES: ObjectiveDefinition[] = [
+  {
+    id: "yd_obj_1",
+    name: "Scramble Alert",
+    description: "Launch from the Great Temple and form up with Red Squadron",
+    hudText: "SCRAMBLE - FORM UP WITH RED SQUADRON",
+    hudTextActive: "FORMING UP...",
+    hudTextComplete: "RED SQUADRON READY",
+    phase: "launch",
+    sequence: 1,
+    priority: ObjectivePriority.NORMAL,
+    triggerStart: { type: TriggerType.MISSION_START },
+    triggerComplete: {
+      type: TriggerType.COMPOUND,
+      conditions: [
+        { type: TriggerType.ALTITUDE_ABOVE, value: 80 },
+        { type: TriggerType.NEAR_ALLIES, count: 3, radius: 150 },
+        { type: TriggerType.DURATION, seconds: 2 }
+      ]
+    },
+    progressType: ProgressIndicatorType.NONE,
+    progressMax: 1,
+    rewardCredits: 0,
+    isOptional: false,
+    radioOnStart: YAVIN_RADIO.scramble,
+    radioOnComplete: ["All wings report in - Red Squadron formed up"]
+  },
+  {
+    id: "yd_obj_2",
+    name: "Intercept First Wave",
+    description: "Engage the incoming TIE Fighter wave before they reach the temple",
+    hudText: "INTERCEPT WAVE 1: 0/6 TIEs",
+    hudTextActive: "ENGAGING TIE FIGHTERS",
+    hudTextComplete: "WAVE 1 ELIMINATED",
+    phase: "combat_wave_1",
+    sequence: 2,
+    priority: ObjectivePriority.NORMAL,
+    triggerStart: { type: TriggerType.OBJECTIVE_COMPLETE, objectiveId: "yd_obj_1" },
+    triggerComplete: { type: TriggerType.KILL_COUNT, targetType: "tie_fighter", count: 6, waveId: 1 },
+    progressType: ProgressIndicatorType.NUMERIC_COUNTER,
+    progressMax: 6,
+    rewardCredits: 150,
+    isOptional: false,
+    radioOnStart: YAVIN_RADIO.wave1,
+    radioOnComplete: ["Wave cleared! But more incoming!"],
+    radioMilestones: {
+      "50": "Halfway there!",
+      "75": "Almost got 'em!"
+    }
+  },
+  {
+    id: "yd_obj_3",
+    name: "Bomber Defense",
+    description: "TIE Bombers are making attack runs on the temple - destroy them!",
+    hudText: "BOMBERS INBOUND - PROTECT THE TEMPLE",
+    hudTextActive: "INTERCEPTING BOMBERS: 0/3",
+    hudTextComplete: "BOMBERS ELIMINATED",
+    phase: "combat_wave_2",
+    sequence: 3,
+    priority: ObjectivePriority.CRITICAL,
+    triggerStart: { type: TriggerType.OBJECTIVE_COMPLETE, objectiveId: "yd_obj_2" },
+    triggerComplete: { type: TriggerType.KILL_COUNT, targetType: "tie_bomber", count: 3, waveId: 2 },
+    triggerFail: { type: TriggerType.ENTITY_HEALTH_BELOW, entity: "great_temple", thresholdPercent: 30 },
+    progressType: ProgressIndicatorType.NUMERIC_COUNTER,
+    progressMax: 3,
+    rewardCredits: 300,
+    isOptional: false,
+    radioOnStart: YAVIN_RADIO.wave2,
+    radioOnComplete: ["Bombers neutralized!"]
+  },
+  {
+    id: "yd_obj_4",
+    name: "Final Assault",
+    description: "The remaining Imperial forces are making a desperate all-out attack",
+    hudText: "FINAL WAVE: 0/6 REMAINING",
+    hudTextActive: "ELIMINATE REMAINING FORCES",
+    hudTextComplete: "IMPERIAL ASSAULT REPELLED",
+    phase: "combat_wave_3",
+    sequence: 4,
+    priority: ObjectivePriority.HIGH,
+    triggerStart: { type: TriggerType.OBJECTIVE_COMPLETE, objectiveId: "yd_obj_3" },
+    triggerComplete: { type: TriggerType.KILL_COUNT, count: 6, waveId: 3 },
+    triggerFail: { type: TriggerType.ENTITY_HEALTH_BELOW, entity: "great_temple", thresholdPercent: 0 },
+    progressType: ProgressIndicatorType.NUMERIC_COUNTER,
+    progressMax: 6,
+    rewardCredits: 250,
+    isOptional: false,
+    radioOnStart: YAVIN_RADIO.wave3,
+    radioOnComplete: ["That's the last of them! Victory!"]
+  },
+  {
+    id: "yd_bonus_1",
+    name: "Ace Pilot",
+    description: "Destroy 5 enemies consecutively without taking significant damage",
+    hudText: "BONUS: ACE STREAK 0/5",
+    hudTextActive: "ACE STREAK: 0/5",
+    hudTextComplete: "ACE PILOT ACHIEVED!",
+    phase: "combat",
+    sequence: 99,
+    priority: ObjectivePriority.NORMAL,
+    triggerStart: { type: TriggerType.OBJECTIVE_COMPLETE, objectiveId: "yd_obj_1" },
+    triggerComplete: { type: TriggerType.KILL_STREAK, count: 5 },
+    progressType: ProgressIndicatorType.NUMERIC_COUNTER,
+    progressMax: 5,
+    rewardCredits: 500,
+    isOptional: true,
+    radioOnComplete: ["Great shot! That was one in a million!"]
+  }
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Yavin Context
@@ -81,6 +218,18 @@ export class YavinDefenseScenario {
   // Mission state
   private yavin: YavinDefenseState | null = null;
 
+  // Wave tracking for objectives
+  private currentWave = 0;
+  private waveEnemyTypes = new Map<number, string>(); // eid -> enemy type
+  private missionTime = 0;
+
+  // Objective system
+  private objectiveTracker: ObjectiveTracker | null = null;
+  private killTracker: KillTracker | null = null;
+  private objectiveHud: ObjectiveHud | null = null;
+  private announcements: AnnouncementSystem | null = null;
+  private radioChatter: RadioChatterSystem | null = null;
+
   // Landing
   private canLandNow = false;
   private readonly LANDING_ALTITUDE = 150;
@@ -94,6 +243,20 @@ export class YavinDefenseScenario {
 
   enter(yctx: YavinContext): void {
     this.lockState = { lockValue: 0, lockTargetEid: -1 };
+    this.missionTime = 0;
+    this.currentWave = 0;
+    this.waveEnemyTypes.clear();
+
+    // Initialize objective system
+    this.objectiveTracker = new ObjectiveTracker(YAVIN_OBJECTIVES);
+    this.killTracker = new KillTracker(80); // Reset streak if shield < 80%
+    this.objectiveTracker.initialize();
+
+    // Initialize HUD systems
+    const hudContainer = yctx.ctx.hud;
+    this.objectiveHud = new ObjectiveHud(hudContainer);
+    this.announcements = new AnnouncementSystem(hudContainer);
+    this.radioChatter = new RadioChatterSystem(hudContainer);
 
     // Build terrain
     this.buildYavinPlanet(yctx);
@@ -103,10 +266,17 @@ export class YavinDefenseScenario {
 
     // Start defense mission
     this.startYavinDefense(yctx);
+
+    // Queue initial radio chatter
+    if (this.radioChatter) {
+      this.radioChatter.queueMessages(YAVIN_RADIO.scramble, RadioSpeaker.WINGMAN, 5);
+    }
   }
 
   tick(yctx: YavinContext, dt: number): boolean {
     if (!this.yavin) return false;
+
+    this.missionTime += dt;
 
     // Sync targets
     const syncResult = syncTargets(
@@ -116,19 +286,26 @@ export class YavinDefenseScenario {
       yctx.explosions
     );
 
-    // Handle kills
-    if (syncResult.killedCount > 0 && yctx.shipEid !== null && this.yavin.phase === "combat") {
+    // Handle kills - track for objectives
+    if (syncResult.killedCount > 0 && yctx.shipEid !== null) {
+      for (const killedEid of syncResult.killedEids) {
+        const enemyType = this.waveEnemyTypes.get(killedEid) ?? "tie_fighter";
+        const wave = this.currentWave;
+        this.killTracker?.recordKill(enemyType, wave);
+        this.waveEnemyTypes.delete(killedEid);
+      }
+
       this.yavin.enemiesKilled += syncResult.killedCount;
       yctx.ctx.profile.credits += syncResult.killedCount * 10;
-
-      if (this.yavin.enemiesKilled >= this.yavin.enemiesTotal && syncResult.targetEids.length === 0) {
-        this.yavin.phase = "success";
-        yctx.ctx.profile.credits += this.yavin.rewardCredits;
-        this.yavin.message = `VICTORY  +${this.yavin.rewardCredits} CR`;
-        this.yavin.messageTimer = 6;
-        yctx.ctx.profile.missionTier += 1;
-      }
       yctx.ctx.scheduleSave();
+    }
+
+    // Check player shield for kill streak
+    if (yctx.shipEid !== null && this.killTracker) {
+      const shieldPercent = hasComponent(yctx.ctx.world, Shield, yctx.shipEid)
+        ? ((Shield.sp[yctx.shipEid] ?? 0) / (Shield.maxSp[yctx.shipEid] ?? 1)) * 100
+        : 100;
+      this.killTracker.checkShieldForStreak(shieldPercent);
     }
 
     // Update array in place to preserve FlightMode's reference
@@ -138,33 +315,15 @@ export class YavinDefenseScenario {
     // Sync allies
     this.syncAllies(yctx);
 
-    // Check base destruction
-    if (this.yavin.phase === "combat") {
-      const baseAlive =
-        this.baseEid !== null &&
-        hasComponent(yctx.ctx.world, Health, this.baseEid) &&
-        (Health.hp[this.baseEid] ?? 0) > 0;
-
-      if (!baseAlive) {
-        this.yavin.phase = "fail";
-        this.yavin.message = "MISSION FAILED - GREAT TEMPLE DESTROYED";
-        this.yavin.messageTimer = 8;
-        if (this.baseMesh) {
-          yctx.explosions?.spawn(
-            this.tmpExplosionPos.set(
-              this.baseMesh.position.x,
-              this.baseMesh.position.y + 45,
-              this.baseMesh.position.z
-            ),
-            0xff4444
-          );
-          yctx.ctx.scene.remove(this.baseMesh);
-          disposeObject(this.baseMesh);
-          this.baseMesh = null;
-        }
-        yctx.ctx.scheduleSave();
-      }
+    // Build objective context and update tracker
+    if (this.objectiveTracker && this.killTracker) {
+      const objContext = this.buildObjectiveContext(yctx);
+      const events = this.objectiveTracker.tick(dt, objContext);
+      this.processObjectiveEvents(yctx, events);
     }
+
+    // Check for wave transitions based on objective completion
+    this.checkWaveTransitions(yctx);
 
     // Terrain clamping
     if (yctx.shipEid !== null) {
@@ -182,6 +341,10 @@ export class YavinDefenseScenario {
       this.yavin.messageTimer = Math.max(0, this.yavin.messageTimer - dt);
     }
 
+    // Update HUD systems
+    this.announcements?.tick(dt);
+    this.radioChatter?.tick(dt);
+
     // Landing detection
     if (yctx.shipEid !== null) {
       const altitude = (Transform.y[yctx.shipEid] ?? 0) - this.terrainHeight(
@@ -192,6 +355,321 @@ export class YavinDefenseScenario {
     }
 
     return false;
+  }
+
+  /**
+   * Build ObjectiveContext from current game state
+   */
+  private buildObjectiveContext(yctx: YavinContext): ObjectiveContext {
+    const ctx = createDefaultObjectiveContext();
+    ctx.missionTime = this.missionTime;
+
+    // Kill tracking
+    if (this.killTracker) {
+      ctx.kills = this.killTracker.getTrackingData();
+    }
+
+    // Ally tracking
+    ctx.allies.alive = this.allyEids.length;
+    ctx.allies.started = 5;
+
+    // Count allies near player
+    if (yctx.shipEid !== null) {
+      const px = Transform.x[yctx.shipEid] ?? 0;
+      const py = Transform.y[yctx.shipEid] ?? 0;
+      const pz = Transform.z[yctx.shipEid] ?? 0;
+
+      let nearbyCount = 0;
+      for (const allyEid of this.allyEids) {
+        const ax = Transform.x[allyEid] ?? 0;
+        const ay = Transform.y[allyEid] ?? 0;
+        const az = Transform.z[allyEid] ?? 0;
+        const dist = Math.sqrt((px - ax) ** 2 + (py - ay) ** 2 + (pz - az) ** 2);
+        if (dist <= 150) nearbyCount++;
+      }
+      ctx.allies.nearbyCount = nearbyCount;
+
+      // Player location
+      ctx.location.playerPosition = { x: px, y: py, z: pz };
+      ctx.location.playerAltitude = py - this.terrainHeight(px, pz);
+
+      // Player shield
+      if (hasComponent(yctx.ctx.world, Shield, yctx.shipEid)) {
+        ctx.playerShieldPercent = ((Shield.sp[yctx.shipEid] ?? 0) / (Shield.maxSp[yctx.shipEid] ?? 1)) * 100;
+      }
+    }
+
+    // Base health
+    if (this.baseEid !== null && hasComponent(yctx.ctx.world, Health, this.baseEid)) {
+      ctx.entities.baseHealth = Health.hp[this.baseEid] ?? 0;
+      ctx.entities.baseHealthPercent = ((Health.hp[this.baseEid] ?? 0) / (this.yavin?.baseHpMax ?? 2000)) * 100;
+    }
+
+    // Track completed objectives
+    if (this.objectiveTracker) {
+      const completed = this.objectiveTracker.getObjectivesByStatus(ObjectiveStatus.COMPLETED);
+      for (const obj of completed) {
+        ctx.completedObjectives.add(obj.definition.id);
+      }
+    }
+
+    return ctx;
+  }
+
+  /**
+   * Process objective events (announcements, radio, phase transitions)
+   */
+  private processObjectiveEvents(yctx: YavinContext, events: ObjectiveEvent[]): void {
+    for (const event of events) {
+      switch (event.type) {
+        case ObjectiveEventType.OBJECTIVE_ACTIVATED:
+          if (event.objective?.definition.radioOnStart) {
+            this.radioChatter?.queueMessages(
+              event.objective.definition.radioOnStart,
+              RadioSpeaker.WINGMAN,
+              5
+            );
+          }
+          this.announcements?.announce(
+            newObjectiveAnnouncement(event.objective?.definition.name ?? "", event.message)
+          );
+          break;
+
+        case ObjectiveEventType.OBJECTIVE_COMPLETED:
+          if (event.objective?.definition.radioOnComplete) {
+            this.radioChatter?.queueMessages(
+              event.objective.definition.radioOnComplete,
+              RadioSpeaker.WINGMAN,
+              6
+            );
+          }
+          this.announcements?.announce(
+            objectiveCompleteAnnouncement(event.objective?.definition.hudTextComplete ?? "COMPLETE")
+          );
+
+          // Award credits
+          if (event.objective) {
+            yctx.ctx.profile.credits += event.objective.definition.rewardCredits;
+            yctx.ctx.scheduleSave();
+          }
+          break;
+
+        case ObjectiveEventType.OBJECTIVE_MILESTONE:
+          this.announcements?.announce(milestoneAnnouncement(event.message ?? ""));
+          break;
+
+        case ObjectiveEventType.OBJECTIVE_FAILED:
+          if (!event.objective?.definition.isOptional) {
+            this.yavin!.phase = "fail";
+            this.yavin!.message = "MISSION FAILED";
+            this.yavin!.messageTimer = 8;
+            this.announcements?.announce(missionFailedAnnouncement(event.message));
+          }
+          break;
+
+        case ObjectiveEventType.MISSION_COMPLETE:
+          this.yavin!.phase = "success";
+          this.yavin!.message = `VICTORY  +${this.objectiveTracker?.getTotalCreditsEarned() ?? 0} CR`;
+          this.yavin!.messageTimer = 6;
+          yctx.ctx.profile.credits += this.yavin!.rewardCredits;
+          yctx.ctx.profile.missionTier += 1;
+          yctx.ctx.scheduleSave();
+          this.announcements?.announce(missionCompleteAnnouncement());
+          break;
+
+        case ObjectiveEventType.MISSION_FAILED:
+          this.yavin!.phase = "fail";
+          this.yavin!.message = "MISSION FAILED";
+          this.yavin!.messageTimer = 8;
+          this.announcements?.announce(missionFailedAnnouncement(event.message));
+          yctx.ctx.scheduleSave();
+          break;
+      }
+    }
+  }
+
+  /**
+   * Check for wave transitions and spawn new enemies
+   */
+  private checkWaveTransitions(yctx: YavinContext): void {
+    if (!this.objectiveTracker || !this.yavin) return;
+
+    const active = this.objectiveTracker.getActiveObjective();
+    if (!active) return;
+
+    // Wave 1 -> Wave 2 transition (spawn bombers)
+    if (active.definition.id === "yd_obj_3" && this.currentWave < 2) {
+      this.currentWave = 2;
+      this.spawnWave2Bombers(yctx);
+    }
+
+    // Wave 2 -> Wave 3 transition (spawn final wave)
+    if (active.definition.id === "yd_obj_4" && this.currentWave < 3) {
+      this.currentWave = 3;
+      this.spawnWave3FinalAssault(yctx);
+    }
+  }
+
+  /**
+   * Spawn Wave 2 - TIE Bombers
+   */
+  private spawnWave2Bombers(yctx: YavinContext): void {
+    const rng = createRng(deriveSeed(yctx.currentSystem.seed, "yavin_wave2"));
+
+    for (let i = 0; i < 3; i++) {
+      const archetype = getFighterArchetype("tie_ln"); // Use TIE stats as base
+      const angle = rng.range(-0.3, 0.3);
+      const x = rng.range(-400, 400);
+      const z = -2200 + rng.range(-200, 200);
+      const y = 140 + rng.range(0, 60); // Lower altitude for bombers
+
+      const eid = addEntity(yctx.ctx.world);
+      addComponent(yctx.ctx.world, Transform, eid);
+      addComponent(yctx.ctx.world, Velocity, eid);
+      addComponent(yctx.ctx.world, AngularVelocity, eid);
+      addComponent(yctx.ctx.world, Team, eid);
+      addComponent(yctx.ctx.world, Ship, eid);
+      addComponent(yctx.ctx.world, LaserWeapon, eid);
+      addComponent(yctx.ctx.world, Targetable, eid);
+      addComponent(yctx.ctx.world, Health, eid);
+      addComponent(yctx.ctx.world, HitRadius, eid);
+      addComponent(yctx.ctx.world, Shield, eid);
+      addComponent(yctx.ctx.world, FighterBrain, eid);
+      addComponent(yctx.ctx.world, AIControlled, eid);
+
+      Transform.x[eid] = x;
+      Transform.y[eid] = y;
+      Transform.z[eid] = z;
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI + angle, 0));
+      Transform.qx[eid] = q.x;
+      Transform.qy[eid] = q.y;
+      Transform.qz[eid] = q.z;
+      Transform.qw[eid] = q.w;
+
+      Team.id[eid] = 1;
+
+      // Bombers are slower but tougher
+      Ship.throttle[eid] = 0.5;
+      Ship.maxSpeed[eid] = archetype.maxSpeed * 0.6;
+      Ship.accel[eid] = archetype.accel * 0.7;
+      Ship.turnRate[eid] = archetype.turnRate * 0.7;
+
+      LaserWeapon.cooldown[eid] = archetype.weaponCooldown * 2;
+      LaserWeapon.cooldownRemaining[eid] = 0;
+      LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
+      LaserWeapon.damage[eid] = 15; // Higher damage
+
+      Health.hp[eid] = 80; // Tougher
+      Health.maxHp[eid] = 80;
+      HitRadius.r[eid] = archetype.hitRadius * 1.3; // Bigger target
+
+      Shield.maxSp[eid] = 15;
+      Shield.sp[eid] = 15;
+      Shield.regenRate[eid] = 3;
+      Shield.lastHit[eid] = 999;
+
+      // Target the base
+      FighterBrain.state[eid] = 0;
+      FighterBrain.stateTime[eid] = 0;
+      FighterBrain.aggression[eid] = 0.9;
+      FighterBrain.evadeBias[eid] = 0.2;
+      FighterBrain.targetEid[eid] = this.baseEid ?? -1;
+
+      // Track enemy type for kill tracking
+      this.waveEnemyTypes.set(eid, "tie_bomber");
+
+      // Build bomber mesh (visually distinct)
+      const mesh = buildEnemyMesh("tie_ln");
+      mesh.scale.setScalar(2.8); // Slightly larger
+      mesh.position.set(x, y, z);
+      yctx.ctx.scene.add(mesh);
+      yctx.targetMeshes.set(eid, mesh);
+      yctx.targetEids.push(eid);
+    }
+  }
+
+  /**
+   * Spawn Wave 3 - Final mixed assault
+   */
+  private spawnWave3FinalAssault(yctx: YavinContext): void {
+    const rng = createRng(deriveSeed(yctx.currentSystem.seed, "yavin_wave3"));
+
+    // 4 TIE Fighters + 2 TIE Interceptors (represented as faster TIEs)
+    for (let i = 0; i < 6; i++) {
+      const isInterceptor = i >= 4;
+      const archetype = getFighterArchetype("tie_ln");
+      const angle = rng.range(-0.5, 0.5);
+      const x = rng.range(-800, 800);
+      const z = -2400 + rng.range(-300, 300);
+      const y = 180 + rng.range(0, 200);
+
+      const eid = addEntity(yctx.ctx.world);
+      addComponent(yctx.ctx.world, Transform, eid);
+      addComponent(yctx.ctx.world, Velocity, eid);
+      addComponent(yctx.ctx.world, AngularVelocity, eid);
+      addComponent(yctx.ctx.world, Team, eid);
+      addComponent(yctx.ctx.world, Ship, eid);
+      addComponent(yctx.ctx.world, LaserWeapon, eid);
+      addComponent(yctx.ctx.world, Targetable, eid);
+      addComponent(yctx.ctx.world, Health, eid);
+      addComponent(yctx.ctx.world, HitRadius, eid);
+      addComponent(yctx.ctx.world, Shield, eid);
+      addComponent(yctx.ctx.world, FighterBrain, eid);
+      addComponent(yctx.ctx.world, AIControlled, eid);
+
+      Transform.x[eid] = x;
+      Transform.y[eid] = y;
+      Transform.z[eid] = z;
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI + angle, 0));
+      Transform.qx[eid] = q.x;
+      Transform.qy[eid] = q.y;
+      Transform.qz[eid] = q.z;
+      Transform.qw[eid] = q.w;
+
+      Team.id[eid] = 1;
+
+      // Interceptors are faster and more agile
+      const speedMult = isInterceptor ? 1.15 : 1.0;
+      const turnMult = isInterceptor ? 1.2 : 1.0;
+
+      Ship.throttle[eid] = rng.range(0.8, 1.0);
+      Ship.maxSpeed[eid] = archetype.maxSpeed * speedMult;
+      Ship.accel[eid] = archetype.accel * speedMult;
+      Ship.turnRate[eid] = archetype.turnRate * turnMult;
+
+      LaserWeapon.cooldown[eid] = archetype.weaponCooldown * (isInterceptor ? 0.9 : 1.1);
+      LaserWeapon.cooldownRemaining[eid] = rng.range(0, archetype.weaponCooldown);
+      LaserWeapon.projectileSpeed[eid] = archetype.projectileSpeed;
+      LaserWeapon.damage[eid] = 6;
+
+      Health.hp[eid] = isInterceptor ? 40 : 50;
+      Health.maxHp[eid] = isInterceptor ? 40 : 50;
+      HitRadius.r[eid] = archetype.hitRadius;
+
+      Shield.maxSp[eid] = 8;
+      Shield.sp[eid] = 8;
+      Shield.regenRate[eid] = 2;
+      Shield.lastHit[eid] = 999;
+
+      // More aggressive in final wave
+      FighterBrain.state[eid] = 0;
+      FighterBrain.stateTime[eid] = 0;
+      FighterBrain.aggression[eid] = 0.75;
+      FighterBrain.evadeBias[eid] = 0.35;
+      FighterBrain.targetEid[eid] = -1;
+
+      // Track enemy type
+      this.waveEnemyTypes.set(eid, isInterceptor ? "tie_interceptor" : "tie_fighter");
+
+      const mesh = buildEnemyMesh("tie_ln");
+      if (isInterceptor) {
+        mesh.scale.setScalar(2.3); // Slightly smaller for interceptor
+      }
+      mesh.position.set(x, y, z);
+      yctx.ctx.scene.add(mesh);
+      yctx.targetMeshes.set(eid, mesh);
+      yctx.targetEids.push(eid);
+    }
   }
 
   handleHyperspace(_yctx: YavinContext): boolean {
@@ -219,8 +697,14 @@ export class YavinDefenseScenario {
       this.baseEid !== null && hasComponent(yctx.ctx.world, Health, this.baseEid)
         ? Health.hp[this.baseEid] ?? 0
         : 0;
+    const baseHpPercent = (baseHp / (this.yavin?.baseHpMax ?? 2000)) * 100;
 
-    // Mission message
+    // Update objective HUD
+    if (this.objectiveTracker && this.objectiveHud) {
+      this.objectiveHud.update(this.objectiveTracker, dt);
+    }
+
+    // Mission message - now shows phase info
     if (this.yavin) {
       if (this.yavin.messageTimer > 0) {
         els.mission.textContent = this.yavin.message;
@@ -229,7 +713,11 @@ export class YavinDefenseScenario {
       } else if (this.yavin.phase === "fail") {
         els.mission.textContent = "MISSION FAILED - PRESS H TO RESTART";
       } else {
-        els.mission.textContent = `DEFEND GREAT TEMPLE: ${this.yavin.enemiesKilled}/${this.yavin.enemiesTotal}  BASE ${Math.max(0, baseHp).toFixed(0)}/${this.yavin.baseHpMax}`;
+        // Show active objective and base health
+        const active = this.objectiveTracker?.getActiveObjective();
+        const objText = active ? active.definition.hudTextActive : "DEFEND GREAT TEMPLE";
+        const hpColor = baseHpPercent > 60 ? "" : baseHpPercent > 30 ? "[WARNING] " : "[CRITICAL] ";
+        els.mission.textContent = `${objText}  ${hpColor}BASE: ${Math.max(0, baseHp).toFixed(0)}/${this.yavin.baseHpMax}`;
       }
     }
 
@@ -265,6 +753,18 @@ export class YavinDefenseScenario {
     this.clearEnvironmentalProps(yctx);
     this.clearAllies(yctx);
     this.yavin = null;
+
+    // Dispose HUD systems
+    this.objectiveHud?.dispose();
+    this.announcements?.dispose();
+    this.radioChatter?.dispose();
+    this.objectiveHud = null;
+    this.announcements = null;
+    this.radioChatter = null;
+    this.objectiveTracker = null;
+    this.killTracker = null;
+    this.waveEnemyTypes.clear();
+    this.currentWave = 0;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -715,7 +1215,8 @@ export class YavinDefenseScenario {
     this.spawnWingman(yctx, 3, -40, 290);
     this.spawnWingman(yctx, 4, 40, 290);
 
-    // TIE raid
+    // TIE raid - Wave 1
+    this.currentWave = 1;
     this.spawnYavinTieRaid(yctx, yctx.currentSystem.seed, this.yavin.enemiesTotal);
 
     this.yavin.phase = "combat";
@@ -863,6 +1364,9 @@ export class YavinDefenseScenario {
       FighterBrain.aggression[eid] = 0.55;
       FighterBrain.evadeBias[eid] = 0.45;
       FighterBrain.targetEid[eid] = baseTarget !== null && i < Math.ceil(count * 0.25) ? baseTarget : -1;
+
+      // Track enemy type for wave 1 kill tracking
+      this.waveEnemyTypes.set(eid, "tie_fighter");
 
       const mesh = buildEnemyMesh("tie_ln");
       mesh.position.set(x, y, z);

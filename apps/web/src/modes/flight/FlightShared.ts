@@ -430,6 +430,7 @@ export function clearProjectiles(
 export interface SyncTargetsResult {
   targetEids: number[];
   killedCount: number;
+  killedEids: number[];
 }
 
 export function syncTargets(
@@ -441,10 +442,12 @@ export function syncTargets(
   const aliveTargets = getTargetables(ctx.world);
   const aliveSet = new Set(aliveTargets);
   let killed = 0;
+  const killedEids: number[] = [];
 
   for (const [eid, mesh] of targetMeshes) {
     if (aliveSet.has(eid)) continue;
     killed += 1;
+    killedEids.push(eid);
     explosions?.spawn(tmpExplosionPos.copy(mesh.position));
     scene.remove(mesh);
     disposeObject(mesh);
@@ -463,7 +466,7 @@ export function syncTargets(
     );
   }
 
-  return { targetEids: aliveTargets, killedCount: killed };
+  return { targetEids: aliveTargets, killedCount: killed, killedEids };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -680,7 +680,9 @@ export class FlightMode implements ModeHandler {
       targetEids: this.targetEids,
       targetMeshes: this.targetMeshes,
       projectileMeshes: this.projectileMeshes,
-      explosions: this.explosions
+      explosions: this.explosions,
+      assetLoader: this.assetLoader,
+      assetsReady: this.assetsReady
     };
   }
 

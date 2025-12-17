@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { addComponent, addEntity, removeEntity, hasComponent } from "bitecs";
 import { createRng, deriveSeed, getFighterArchetype, type SystemDef } from "@xwingz/procgen";
+import { AssetLoader, KENNEY_ASSETS } from "@xwingz/render";
 import {
   AIControlled,
   AngularVelocity,
@@ -51,6 +52,8 @@ export interface YavinContext {
   targetMeshes: Map<number, THREE.Object3D>;
   projectileMeshes: Map<number, THREE.Mesh>;
   explosions: ExplosionManager | null;
+  assetLoader: AssetLoader;
+  assetsReady: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +66,9 @@ export class YavinDefenseScenario {
   private groundMesh: THREE.Mesh | null = null;
   private treeTrunks: THREE.InstancedMesh | null = null;
   private treeCanopies: THREE.InstancedMesh | null = null;
+
+  // Environmental props (rocks, turrets, generators)
+  private environmentalProps: THREE.Object3D[] = [];
 
   // Base
   private baseEid: number | null = null;
@@ -91,6 +97,9 @@ export class YavinDefenseScenario {
 
     // Build terrain
     this.buildYavinPlanet(yctx);
+
+    // Add environmental props (rocks, turrets, generators)
+    this.spawnEnvironmentalProps(yctx);
 
     // Start defense mission
     this.startYavinDefense(yctx);
@@ -253,6 +262,7 @@ export class YavinDefenseScenario {
 
   exit(yctx: YavinContext): void {
     this.clearPlanetaryScene(yctx);
+    this.clearEnvironmentalProps(yctx);
     this.clearAllies(yctx);
     this.yavin = null;
   }
@@ -394,6 +404,187 @@ export class YavinDefenseScenario {
 
     group.add(step1, step2, step3, top, hangar, pad);
     return group;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Environmental Props (Rocks, Turrets, Generators)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private async spawnEnvironmentalProps(yctx: YavinContext): Promise<void> {
+    const rng = createRng(deriveSeed(yctx.currentSystem.seed, "yavin_props"));
+
+    // Preload Kenney assets for environmental props
+    const propsToLoad = [
+      KENNEY_ASSETS.ROCK_LARGE_A,
+      KENNEY_ASSETS.ROCK_LARGE_B,
+      KENNEY_ASSETS.ROCK,
+      KENNEY_ASSETS.ROCK_CRYSTALS,
+      KENNEY_ASSETS.METEOR,
+      KENNEY_ASSETS.TURRET_DOUBLE,
+      KENNEY_ASSETS.TURRET_SINGLE,
+      KENNEY_ASSETS.MACHINE_GENERATOR,
+      KENNEY_ASSETS.SATELLITE_DISH_LARGE,
+      KENNEY_ASSETS.BARRELS
+    ];
+
+    try {
+      await yctx.assetLoader.preload(propsToLoad);
+    } catch {
+      // Assets not available, use procedural fallbacks
+      this.spawnProceduralRocks(yctx, rng);
+      return;
+    }
+
+    // OUTER RING - Obstacle field (z = -1200 to -1600)
+    // Forces TIEs to break formation
+    const outerRocks = [
+      { asset: KENNEY_ASSETS.ROCK_LARGE_A, x: -600, z: -1400, scale: 3.2, rotY: 0.4 },
+      { asset: KENNEY_ASSETS.ROCK_LARGE_B, x: -350, z: -1550, scale: 2.8, rotY: 1.2 },
+      { asset: KENNEY_ASSETS.METEOR, x: -700, z: -1200, scale: 2.5, rotY: 2.1 },
+      { asset: KENNEY_ASSETS.ROCK_LARGE_A, x: 550, z: -1350, scale: 3.5, rotY: 4.8 },
+      { asset: KENNEY_ASSETS.ROCK_LARGE_B, x: 400, z: -1500, scale: 2.6, rotY: 3.3 },
+      { asset: KENNEY_ASSETS.METEOR, x: 700, z: -1250, scale: 2.8, rotY: 0.9 },
+      { asset: KENNEY_ASSETS.ROCK_LARGE_A, x: 0, z: -1600, scale: 3.0, rotY: 1.5 },
+      { asset: KENNEY_ASSETS.ROCK_LARGE_B, x: -200, z: -1350, scale: 2.4, rotY: 5.5 }
+    ];
+
+    // MID RING - Engagement zone (z = -400 to -800)
+    // Provides cover for dogfighting
+    const midRocks = [
+      { asset: KENNEY_ASSETS.ROCK_LARGE_A, x: -500, z: -600, scale: 2.2, rotY: 1.8 },
+      { asset: KENNEY_ASSETS.ROCK_LARGE_A, x: 520, z: -550, scale: 2.4, rotY: 5.2 },
+      { asset: KENNEY_ASSETS.ROCK_CRYSTALS, x: -380, z: -700, scale: 1.8, rotY: 0.7 },
+      { asset: KENNEY_ASSETS.ROCK, x: 450, z: -750, scale: 2.0, rotY: 2.3 },
+      { asset: KENNEY_ASSETS.ROCK_CRYSTALS, x: 380, z: -680, scale: 1.6, rotY: 4.1 }
+    ];
+
+    // INNER RING - Temple flanks (z = 100 to 300)
+    // Frames the temple
+    const innerRocks = [
+      { asset: KENNEY_ASSETS.ROCK, x: -200, z: 120, scale: 1.5, rotY: 2.9 },
+      { asset: KENNEY_ASSETS.ROCK, x: 190, z: 100, scale: 1.4, rotY: 4.1 },
+      { asset: KENNEY_ASSETS.ROCK, x: -240, z: -80, scale: 1.2, rotY: 1.1 },
+      { asset: KENNEY_ASSETS.ROCK, x: 230, z: -60, scale: 1.3, rotY: 3.7 }
+    ];
+
+    // Spawn all rocks
+    for (const rock of [...outerRocks, ...midRocks, ...innerRocks]) {
+      try {
+        const mesh = yctx.assetLoader.clone(rock.asset);
+        const y = this.terrainHeight(rock.x, rock.z) + (rock.scale * 4);
+        mesh.position.set(rock.x, y, rock.z);
+        mesh.rotation.y = rock.rotY;
+        mesh.scale.setScalar(rock.scale);
+        // Darken to match jungle stone aesthetic
+        mesh.traverse((child) => {
+          if (child instanceof THREE.Mesh && child.material) {
+            const mat = child.material as THREE.MeshStandardMaterial;
+            if (mat.color) mat.color.multiplyScalar(0.75);
+          }
+        });
+        yctx.ctx.scene.add(mesh);
+        this.environmentalProps.push(mesh);
+      } catch {
+        // Individual asset failed, continue
+      }
+    }
+
+    // DEFENSIVE TURRETS - On temple steps
+    const turretPositions = [
+      { asset: KENNEY_ASSETS.TURRET_DOUBLE, x: -110, y: 49 + 15, z: 105, scale: 1.3 },
+      { asset: KENNEY_ASSETS.TURRET_DOUBLE, x: 110, y: 49 + 15, z: 105, scale: 1.3 },
+      { asset: KENNEY_ASSETS.TURRET_SINGLE, x: -70, y: 1.5, z: 340, scale: 1.0 },
+      { asset: KENNEY_ASSETS.TURRET_SINGLE, x: 70, y: 1.5, z: 340, scale: 1.0 }
+    ];
+
+    for (const turret of turretPositions) {
+      try {
+        const mesh = yctx.assetLoader.clone(turret.asset);
+        const baseY = this.terrainHeight(turret.x, turret.z);
+        mesh.position.set(turret.x, baseY + turret.y, turret.z);
+        mesh.scale.setScalar(turret.scale);
+        mesh.rotation.y = Math.PI; // Face outward
+        yctx.ctx.scene.add(mesh);
+        this.environmentalProps.push(mesh);
+      } catch {
+        // Continue if asset fails
+      }
+    }
+
+    // GENERATOR PROPS - Power infrastructure
+    const generatorPositions = [
+      { asset: KENNEY_ASSETS.MACHINE_GENERATOR, x: -50, z: 200, scale: 0.8 },
+      { asset: KENNEY_ASSETS.MACHINE_GENERATOR, x: 50, z: 200, scale: 0.8 },
+      { asset: KENNEY_ASSETS.BARRELS, x: -30, z: 180, scale: 0.6 },
+      { asset: KENNEY_ASSETS.BARRELS, x: 35, z: 185, scale: 0.6 }
+    ];
+
+    for (const gen of generatorPositions) {
+      try {
+        const mesh = yctx.assetLoader.clone(gen.asset);
+        const y = this.terrainHeight(gen.x, gen.z) + 1.5;
+        mesh.position.set(gen.x, y, gen.z);
+        mesh.scale.setScalar(gen.scale);
+        yctx.ctx.scene.add(mesh);
+        this.environmentalProps.push(mesh);
+      } catch {
+        // Continue if asset fails
+      }
+    }
+
+    // COMM DISH - On temple roof
+    try {
+      const dish = yctx.assetLoader.clone(KENNEY_ASSETS.SATELLITE_DISH_LARGE);
+      const templeTopY = this.terrainHeight(0, 0) + 34 + 30 + 28 + 12;
+      dish.position.set(40, templeTopY + 15, -30);
+      dish.scale.setScalar(0.8);
+      dish.rotation.x = -0.26; // Tilt toward sky
+      yctx.ctx.scene.add(dish);
+      this.environmentalProps.push(dish);
+    } catch {
+      // Continue if asset fails
+    }
+  }
+
+  /**
+   * Fallback procedural rocks when Kenney assets aren't available
+   */
+  private spawnProceduralRocks(yctx: YavinContext, rng: ReturnType<typeof createRng>): void {
+    const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x4a5a4a, roughness: 0.95 });
+
+    const rockPositions = [
+      { x: -600, z: -1400, scale: 25 },
+      { x: 550, z: -1350, scale: 28 },
+      { x: -500, z: -600, scale: 18 },
+      { x: 520, z: -550, scale: 20 },
+      { x: -200, z: 120, scale: 12 },
+      { x: 190, z: 100, scale: 11 }
+    ];
+
+    for (const pos of rockPositions) {
+      const rock = new THREE.Mesh(rockGeo, rockMat);
+      const y = this.terrainHeight(pos.x, pos.z) + pos.scale * 0.5;
+      rock.position.set(pos.x, y, pos.z);
+      rock.scale.set(
+        pos.scale * rng.range(0.8, 1.2),
+        pos.scale * rng.range(0.6, 1.0),
+        pos.scale * rng.range(0.8, 1.2)
+      );
+      rock.rotation.set(rng.range(0, 0.3), rng.range(0, Math.PI * 2), rng.range(0, 0.3));
+      rock.castShadow = true;
+      rock.receiveShadow = true;
+      yctx.ctx.scene.add(rock);
+      this.environmentalProps.push(rock);
+    }
+  }
+
+  private clearEnvironmentalProps(yctx: YavinContext): void {
+    for (const prop of this.environmentalProps) {
+      yctx.ctx.scene.remove(prop);
+      disposeObject(prop);
+    }
+    this.environmentalProps = [];
   }
 
   private clearPlanetaryScene(yctx: YavinContext): void {

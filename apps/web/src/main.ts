@@ -72,29 +72,36 @@ const YAVIN_DEFENSE_SYSTEM: SystemDef = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mode Management
+// Mode Management (Factory Pattern)
 // ─────────────────────────────────────────────────────────────────────────────
 
-let currentMode: Mode = "map";
-const modeHandlers: Record<Mode, ModeHandler> = {
-  map: new MapMode(),
-  flight: new FlightMode(),
-  ground: new GroundMode(),
-  conquest: new ConquestMode()
+// Factory functions create fresh mode instances to prevent state leakage
+const modeFactories: Record<Mode, () => ModeHandler> = {
+  map: () => new MapMode(),
+  flight: () => new FlightMode(),
+  ground: () => new GroundMode(),
+  conquest: () => new ConquestMode()
 };
 
+let currentMode: Mode = "map";
+let currentHandler: ModeHandler | null = null;
+
 function requestModeChange(newMode: Mode, data?: ModeTransitionData): void {
-  // Allow same-mode re-entry when data is provided (for restarts)
-  const isSameMode = newMode === currentMode;
+  // Exit current mode with full cleanup
+  if (currentHandler) {
+    currentHandler.exit(modeContext);
+    currentHandler = null; // Allow GC of old handler
+  }
 
-  // Exit current mode
-  modeHandlers[currentMode].exit(modeContext);
-
-  // Enter new mode (or re-enter same mode for restart)
+  // Create fresh instance via factory (prevents state leakage)
   currentMode = newMode;
-  modeHandlers[currentMode].enter(modeContext, data);
+  currentHandler = modeFactories[newMode]();
+  currentHandler.enter(modeContext, data);
+}
 
-  void isSameMode; // Used for restart logic
+// Getter for current handler (used by E2E hooks)
+function getCurrentHandler(): ModeHandler | null {
+  return currentHandler;
 }
 
 // Create mode context
@@ -131,36 +138,39 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
   })();
 
   try {
+    // Helper to safely get typed handler (factory pattern means handler changes)
+    const getFlightHandler = (): FlightMode | null => {
+      const handler = getCurrentHandler();
+      return currentMode === "flight" && handler ? handler as FlightMode : null;
+    };
+    const getConquestHandler = (): ConquestMode | null => {
+      const handler = getCurrentHandler();
+      return currentMode === "conquest" && handler ? handler as ConquestMode : null;
+    };
+
     // Read-only game state getters (dev tools only)
     (window as any).__xwingz = {
       get mode() { return currentMode; },
       get scenario() {
-        const flight = modeHandlers.flight as FlightMode;
-        return flight.currentScenario;
+        return getFlightHandler()?.currentScenario ?? null;
       },
       get yavinPhase() {
-        const flight = modeHandlers.flight as FlightMode;
-        return flight.yavinPhase;
+        return getFlightHandler()?.yavinPhase ?? null;
       },
       get starDestroyerPhase() {
-        const flight = modeHandlers.flight as FlightMode;
-        return flight.starDestroyerPhase;
+        return getFlightHandler()?.starDestroyerPhase ?? null;
       },
       get capitalShipCount() {
-        const flight = modeHandlers.flight as FlightMode;
-        return flight.capitalShipCount;
+        return getFlightHandler()?.capitalShipCount ?? 0;
       },
       get targetCount() {
-        const flight = modeHandlers.flight as FlightMode;
-        return flight.targetCount;
+        return getFlightHandler()?.targetCount ?? 0;
       },
       get allyCount() {
-        const flight = modeHandlers.flight as FlightMode;
-        return flight.allyCount;
+        return getFlightHandler()?.allyCount ?? 0;
       },
       get projectileCount() {
-        const flight = modeHandlers.flight as FlightMode;
-        return flight.projectileCount;
+        return getFlightHandler()?.projectileCount ?? 0;
       },
       get planetCount() { return PLANETS.length; },
       get credits() { return profile.credits; },
@@ -168,23 +178,19 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
       get yavinSystem() { return YAVIN_DEFENSE_SYSTEM; },
       // Conquest mode state getters
       get conquestState() {
-        const conquest = modeHandlers.conquest as ConquestMode;
-        if (currentMode !== "conquest" || !conquest.simulation) return null;
-        return conquest.simulation.getOverview();
+        const conquest = getConquestHandler();
+        return conquest?.simulation?.getOverview() ?? null;
       },
       get conquestPlanets() {
-        const conquest = modeHandlers.conquest as ConquestMode;
-        if (currentMode !== "conquest" || !conquest.simulation) return [];
-        return conquest.simulation.getPlanets();
+        const conquest = getConquestHandler();
+        return conquest?.simulation?.getPlanets() ?? [];
       },
       get conquestFleets() {
-        const conquest = modeHandlers.conquest as ConquestMode;
-        if (currentMode !== "conquest" || !conquest.simulation) return [];
-        return conquest.simulation.getFleets();
+        const conquest = getConquestHandler();
+        return conquest?.simulation?.getFleets() ?? [];
       },
       get selectedPlanetIndex() {
-        const conquest = modeHandlers.conquest as ConquestMode;
-        return conquest.selectedPlanetIndex ?? -1;
+        return getConquestHandler()?.selectedPlanetIndex ?? -1;
       },
       // Mode transition helpers for tests
       enterFlight(system: SystemDef, scenario: "sandbox" | "yavin_defense" | "destroy_star_destroyer" = "sandbox") {
@@ -219,16 +225,16 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
           // Implementation moved to FlightMode - could add method there
         },
         killAllEnemies() {
-          const flight = modeHandlers.flight as FlightMode;
-          flight.killAllEnemiesForTest(game.world);
+          const flight = getFlightHandler();
+          if (flight) flight.killAllEnemiesForTest(game.world);
         },
         failBase() {
-          const flight = modeHandlers.flight as FlightMode;
-          flight.failBaseForTest(game.world);
+          const flight = getFlightHandler();
+          if (flight) flight.failBaseForTest(game.world);
         },
         destroyStarDestroyer() {
-          const flight = modeHandlers.flight as FlightMode;
-          flight.destroyStarDestroyerForTest(game.world);
+          const flight = getFlightHandler();
+          if (flight) flight.destroyStarDestroyerForTest(game.world);
         }
       };
     }
@@ -241,12 +247,14 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
 // Game Loop
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Enter initial mode
-modeHandlers[currentMode].enter(modeContext, { type: "map" });
+// Enter initial mode via factory
+requestModeChange("map", { type: "map" });
 
-// Main tick
+// Main tick - uses currentHandler from factory pattern
 game.setTick((dt) => {
-  modeHandlers[currentMode].tick(modeContext, dt);
+  if (currentHandler) {
+    currentHandler.tick(modeContext, dt);
+  }
 });
 
 game.start();

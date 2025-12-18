@@ -124,32 +124,47 @@ export function fleetMovementSystem(world: IWorld, dt: number): void {
 // Battle Detection System
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Reusable map to avoid per-frame allocation (cleared each call)
+const fleetsByPlanetMap = new Map<number, { eid: number; faction: ConquestFactionId }[]>();
+
 /**
  * Detects when opposing forces occupy the same planet.
  * Creates BattlePending entities for resolution.
+ *
+ * Optimized: O(fleets + planets) instead of O(planets * fleets)
  */
 export function battleDetectionSystem(world: IWorld): void {
   const planetEids = conquestPlanetQuery(world);
   const fleetEids = conquestFleetQuery(world);
 
+  // Build fleet-to-planet index (O(fleets))
+  fleetsByPlanetMap.clear();
+  for (const fleetEid of fleetEids) {
+    const currentPlanet = ConquestFleet.currentPlanetEid[fleetEid] ?? -1;
+    const fleetState = ConquestFleet.state[fleetEid] ?? FLEET_STATE.IDLE;
+    if (currentPlanet >= 0 && fleetState !== FLEET_STATE.MOVING) {
+      let list = fleetsByPlanetMap.get(currentPlanet);
+      if (!list) {
+        list = [];
+        fleetsByPlanetMap.set(currentPlanet, list);
+      }
+      list.push({
+        eid: fleetEid,
+        faction: (ConquestFleet.faction[fleetEid] ?? CONQUEST_FACTION.NEUTRAL) as ConquestFactionId
+      });
+    }
+  }
+
+  // Check each planet for opposing forces (O(planets))
   for (const planetEid of planetEids) {
     // Skip planets already under attack
     if (ConquestPlanet.underAttack[planetEid]) continue;
 
-    // Find all fleets at this planet
-    const fleetsHere: { eid: number; faction: ConquestFactionId }[] = [];
-    for (const fleetEid of fleetEids) {
-      const currentPlanet = ConquestFleet.currentPlanetEid[fleetEid] ?? -1;
-      const fleetState = ConquestFleet.state[fleetEid] ?? FLEET_STATE.IDLE;
-      if (currentPlanet === planetEid && fleetState !== FLEET_STATE.MOVING) {
-        fleetsHere.push({
-          eid: fleetEid,
-          faction: (ConquestFleet.faction[fleetEid] ?? CONQUEST_FACTION.NEUTRAL) as ConquestFactionId
-        });
-      }
-    }
+    // O(1) lookup for fleets at this planet
+    const fleetsHere = fleetsByPlanetMap.get(planetEid);
+    if (!fleetsHere || fleetsHere.length < 2) continue;
 
-    // Count opposing factions (avoid allocation)
+    // Count opposing factions
     let rebelFleetEid = -1;
     let empireFleetEid = -1;
     for (const f of fleetsHere) {

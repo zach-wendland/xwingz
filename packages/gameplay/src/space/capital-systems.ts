@@ -18,8 +18,8 @@ import {
   SubsystemType,
   TurretType,
 } from "./capital-components";
-import { SpatialHash } from "@xwingz/physics";
 import { SeededRNG } from "@xwingz/core";
+import { spaceCombatIndex } from "./spatial-index";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EVENTS
@@ -60,8 +60,8 @@ const turretProjectileQuery = defineQuery([TurretProjectile, Transform, Velocity
 const weakPointQuery = defineQuery([WeakPointV2, Transform]);
 const fighterTargetQuery = defineQuery([Health, HitRadius, Transform, Team]);
 
-// Spatial hash for turret targeting
-const fighterSpatialHash = new SpatialHash(150);
+// Note: Spatial hash moved to spatial-index.ts (unified SpaceCombatSpatialIndex)
+// Use rebuildSpaceCombatIndex() once per frame, then spaceCombatIndex.queryCombatants()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TEMP VECTORS
@@ -528,20 +528,10 @@ function getSubsystemHitRadius(type: SubsystemType): number {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Rebuild spatial hash for turret targeting (fighters as targets).
+ * Legacy function - now delegates to unified spatial index.
+ * @deprecated Use rebuildSpaceCombatIndex() from spatial-index.ts instead.
  */
-export function rebuildFighterSpatialHash(world: IWorld): void {
-  fighterSpatialHash.clear();
-  const fighters = fighterTargetQuery(world);
-  for (const fid of fighters) {
-    // Skip capital ships (they're in CapitalShipV2 component)
-    if (hasComponent(world, CapitalShipV2, fid)) continue;
-    const x = Transform.x[fid] ?? 0;
-    const y = Transform.y[fid] ?? 0;
-    const z = Transform.z[fid] ?? 0;
-    fighterSpatialHash.insert(fid, x, y, z);
-  }
-}
+export { rebuildFighterSpatialHash } from "./spatial-index";
 
 /**
  * Sync turret/subsystem/weak point world positions to parent capital ship.
@@ -737,7 +727,7 @@ export function turretTargetingSystem(world: IWorld, _dt: number): void {
 
     // Acquire new target if needed
     if ((Turret.targetEid[tid] ?? -1) < 0) {
-      const nearby = fighterSpatialHash.query(tx, ty, tz, range);
+      const nearby = spaceCombatIndex.queryCombatants(tx, ty, tz, range);
       let bestTarget = -1;
       let bestDist = Infinity;
 
@@ -969,7 +959,7 @@ export function turretProjectileSystem(world: IWorld, dt: number): void {
     Transform.y[pid] = (Transform.y[pid] ?? 0) + vy * dt;
     Transform.z[pid] = (Transform.z[pid] ?? 0) + vz * dt;
 
-    // Collision check (using fighter spatial hash)
+    // Collision check (using unified spatial index)
     const px = Transform.x[pid] ?? 0;
     const py = Transform.y[pid] ?? 0;
     const pz = Transform.z[pid] ?? 0;
@@ -977,7 +967,7 @@ export function turretProjectileSystem(world: IWorld, dt: number): void {
     const parentShipEid = TurretProjectile.parentShipEid[pid] ?? -1;
     const parentTeam = parentShipEid >= 0 ? (Team.id[parentShipEid] ?? 0) : 0;
 
-    const nearby = fighterSpatialHash.query(px, py, pz, 30);
+    const nearby = spaceCombatIndex.queryCombatants(px, py, pz, 30);
 
     for (const fid of nearby) {
       if (!hasComponent(world, Team, fid)) continue;

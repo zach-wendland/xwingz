@@ -27,7 +27,7 @@ import {
   removeCapitalShipV2,
   consumeTurretFireEvents,
   consumeSubsystemDestroyedEvents,
-  rebuildFighterSpatialHash,
+  rebuildSpaceCombatIndex,
   // Objective system
   ObjectiveTracker,
   KillTracker,
@@ -912,7 +912,7 @@ export class StarDestroyerScenario {
       sdctx.targetMeshes.set(eid, mesh);
     }
 
-    rebuildFighterSpatialHash(sdctx.ctx.world);
+    rebuildSpaceCombatIndex(sdctx.ctx.world);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

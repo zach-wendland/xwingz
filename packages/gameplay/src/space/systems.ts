@@ -21,7 +21,7 @@ import {
   WeaponLoadout
 } from "./components";
 import type { SpaceInputState } from "./input";
-import { SpatialHash } from "@xwingz/physics";
+import { spaceCombatIndex } from "./spatial-index";
 
 export type ImpactEvent = {
   x: number;
@@ -119,24 +119,11 @@ const targetingQuery = defineQuery([Targeting, PlayerControlled, Transform, Team
 const aiQuery = defineQuery([AIControlled, FighterBrain, Ship, LaserWeapon, Transform, Velocity, AngularVelocity, Team]);
 const combatantQuery = defineQuery([Health, Transform, Team]);
 
-// Spatial hash for efficient collision queries (O(n) instead of O(n*m))
-// Cell size 100 balances distribution for typical engagement ranges
-const targetSpatialHash = new SpatialHash(100);
+// Note: Spatial hash moved to spatial-index.ts (unified SpaceCombatSpatialIndex)
+// Use rebuildSpaceCombatIndex() once per frame, then spaceCombatIndex.queryCombatants()
 
-/**
- * Rebuild the spatial hash with current target positions.
- * Call once per frame BEFORE projectileSystem/torpedoProjectileSystem.
- */
-export function rebuildTargetSpatialHash(world: IWorld): void {
-  targetSpatialHash.clear();
-  const targets = combatTargetQuery(world);
-  for (const tid of targets) {
-    const x = Transform.x[tid] ?? 0;
-    const y = Transform.y[tid] ?? 0;
-    const z = Transform.z[tid] ?? 0;
-    targetSpatialHash.insert(tid, x, y, z);
-  }
-}
+// Legacy export for backward compatibility - delegates to unified index
+export { rebuildTargetSpatialHash } from "./spatial-index";
 
 const tmpQ = new Quaternion();
 const tmpEuler = new Euler();
@@ -154,6 +141,10 @@ const tmpShotQ = new Quaternion();
 const tmpMount = new Vector3();
 const tmpMountWorld = new Vector3();
 const baseForward = new Vector3(0, 0, -1);
+
+// Reusable buffers for targeting system (reduces per-frame allocations)
+const targetingSortBuffer: { eid: number; dot: number; d2: number }[] = [];
+const targetingResultBuffer: number[] = [];
 
 const XWING_MOUNTS: Array<[number, number, number]> = [
   [-6.2, 3.5, -6.0],
@@ -423,7 +414,7 @@ export function projectileSystem(world: IWorld, dt: number) {
       owner >= 0 && hasComponent(world, Team, owner) ? (Team.id[owner] ?? -1) : -1;
 
     // Query radius: max hit radius (typically ~11-15) plus margin for movement
-    const nearbyTargets = targetSpatialHash.query(px, py, pz, 30);
+    const nearbyTargets = spaceCombatIndex.queryCombatants(px, py, pz, 30);
 
     for (const tid of nearbyTargets) {
       if (tid === owner) continue;
@@ -491,30 +482,41 @@ export function targetingSystem(world: IWorld, input: SpaceInputState) {
   );
   tmpForward.set(0, 0, -1).applyQuaternion(tmpQ).normalize();
 
-  const sorted = hostiles
-    .map((eid) => {
+  // Only recompute sorted list when needed (target invalid or cycling)
+  // This avoids O(n log n) sort + 2 array allocations every frame
+  if (!currentValid || input.cycleTarget) {
+    // Clear and reuse buffers instead of allocating new arrays
+    targetingSortBuffer.length = 0;
+    targetingResultBuffer.length = 0;
+
+    for (const eid of hostiles) {
       const dx = (Transform.x[eid] ?? 0) - px;
       const dy = (Transform.y[eid] ?? 0) - py;
       const dz = (Transform.z[eid] ?? 0) - pz;
       const d2 = dx * dx + dy * dy + dz * dz;
       const inv = 1 / Math.max(1e-6, Math.sqrt(d2));
       const dot = tmpForward.dot(tmpDesired.set(dx * inv, dy * inv, dz * inv));
-      return { eid, dot, d2 };
-    })
-    .sort((a, b) => (b.dot - a.dot) || (a.d2 - b.d2))
-    .map((t) => t.eid);
+      targetingSortBuffer.push({ eid, dot, d2 });
+    }
+
+    targetingSortBuffer.sort((a, b) => (b.dot - a.dot) || (a.d2 - b.d2));
+
+    for (const t of targetingSortBuffer) {
+      targetingResultBuffer.push(t.eid);
+    }
+  }
 
   // Auto-acquire nearest hostile if no valid target
   if (!currentValid) {
-    Targeting.targetEid[pid] = sorted[0] ?? -1;
+    Targeting.targetEid[pid] = targetingResultBuffer[0] ?? -1;
     return;
   }
 
   // Manual cycle only when T pressed
   if (!input.cycleTarget) return;
 
-  const idx = sorted.indexOf(current);
-  const next = idx >= 0 ? sorted[(idx + 1) % sorted.length]! : sorted[0]!;
+  const idx = targetingResultBuffer.indexOf(current);
+  const next = idx >= 0 ? targetingResultBuffer[(idx + 1) % targetingResultBuffer.length]! : targetingResultBuffer[0]!;
   Targeting.targetEid[pid] = next;
 }
 
@@ -648,10 +650,12 @@ export function dogfightAISystem(world: IWorld, dt: number) {
     }
 
     // Separation from nearby AI to reduce clustering.
+    // Uses spatial hash query for O(n*k) instead of O(n²) complexity
     const sepRadius = 90;
     const sepRadius2 = sepRadius * sepRadius;
     let sepX = 0, sepY = 0, sepZ = 0;
-    for (const other of ais) {
+    const nearbyAIs = spaceCombatIndex.queryAIEntities(sx, sy, sz, sepRadius);
+    for (const other of nearbyAIs) {
       if (other === eid) continue;
       const ox = Transform.x[other] ?? 0;
       const oy = Transform.y[other] ?? 0;
@@ -1068,7 +1072,7 @@ export function torpedoProjectileSystem(world: IWorld, dt: number): void {
     const newPz = Transform.z[eid] ?? 0;
 
     // Torpedo has larger hit radius (+5), so query radius 35
-    const nearbyTargets = targetSpatialHash.query(newPx, newPy, newPz, 35);
+    const nearbyTargets = spaceCombatIndex.queryCombatants(newPx, newPy, newPz, 35);
 
     for (const tid of nearbyTargets) {
       if (tid === owner) continue;

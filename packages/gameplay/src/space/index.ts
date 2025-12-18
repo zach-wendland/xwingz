@@ -3,6 +3,7 @@ export * from "./capital-components";
 export * from "./input";
 export * from "./systems";
 export * from "./capital-systems";
+export * from "./spatial-index";
 export * from "./coruscant-systems";
 export * from "./coruscant-runtime";
 export * from "./objective-types";

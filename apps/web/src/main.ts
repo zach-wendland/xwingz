@@ -116,124 +116,125 @@ const modeContext: ModeContext = {
 window.addEventListener("beforeunload", () => saveProfile(profile));
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E2E Test Hooks
+// E2E Test Hooks (Development/Test Only)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const e2eEnabled = (() => {
-  // Only allow E2E helpers in development or test mode
-  if (import.meta.env.MODE !== 'development' && import.meta.env.MODE !== 'test') {
-    return false;
-  }
+// Only expose test hooks in development or test builds
+// In production builds, this entire block is tree-shaken out
+if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
+  const e2eEnabled = (() => {
+    try {
+      return new URLSearchParams(window.location.search).has("e2e");
+    } catch {
+      return false;
+    }
+  })();
 
   try {
-    return new URLSearchParams(window.location.search).has("e2e");
-  } catch {
-    return false;
-  }
-})();
-
-try {
-  (window as any).__xwingz = {
-    get mode() { return currentMode; },
-    get scenario() {
-      const flight = modeHandlers.flight as FlightMode;
-      return flight.currentScenario;
-    },
-    get yavinPhase() {
-      const flight = modeHandlers.flight as FlightMode;
-      return flight.yavinPhase;
-    },
-    get starDestroyerPhase() {
-      const flight = modeHandlers.flight as FlightMode;
-      return flight.starDestroyerPhase;
-    },
-    get capitalShipCount() {
-      const flight = modeHandlers.flight as FlightMode;
-      return flight.capitalShipCount;
-    },
-    get targetCount() {
-      const flight = modeHandlers.flight as FlightMode;
-      return flight.targetCount;
-    },
-    get allyCount() {
-      const flight = modeHandlers.flight as FlightMode;
-      return flight.allyCount;
-    },
-    get projectileCount() {
-      const flight = modeHandlers.flight as FlightMode;
-      return flight.projectileCount;
-    },
-    get planetCount() { return PLANETS.length; },
-    get credits() { return profile.credits; },
-    // Expose Yavin system for tests
-    get yavinSystem() { return YAVIN_DEFENSE_SYSTEM; },
-    // Conquest mode state getters
-    get conquestState() {
-      const conquest = modeHandlers.conquest as ConquestMode;
-      if (currentMode !== "conquest" || !conquest.simulation) return null;
-      return conquest.simulation.getOverview();
-    },
-    get conquestPlanets() {
-      const conquest = modeHandlers.conquest as ConquestMode;
-      if (currentMode !== "conquest" || !conquest.simulation) return [];
-      return conquest.simulation.getPlanets();
-    },
-    get conquestFleets() {
-      const conquest = modeHandlers.conquest as ConquestMode;
-      if (currentMode !== "conquest" || !conquest.simulation) return [];
-      return conquest.simulation.getFleets();
-    },
-    get selectedPlanetIndex() {
-      const conquest = modeHandlers.conquest as ConquestMode;
-      return conquest.selectedPlanetIndex ?? -1;
-    },
-    // Mode transition helpers for tests
-    enterFlight(system: SystemDef, scenario: "sandbox" | "yavin_defense" | "destroy_star_destroyer" = "sandbox") {
-      requestModeChange("flight", { type: "flight", system, scenario });
-    },
-    enterMap() {
-      requestModeChange("map", { type: "map" });
-    },
-    enterGround() {
-      requestModeChange("ground", { type: "ground" });
-    },
-    enterConquest() {
-      requestModeChange("conquest", { type: "conquest" });
-    },
-    // Quick access to Star Destroyer mission
-    enterStarDestroyer() {
-      const coruscant = PLANETS.find(p => p.id === "coruscant");
-      if (coruscant) {
-        const system = planetToSystem(coruscant);
-        requestModeChange("flight", { type: "flight", system, scenario: "destroy_star_destroyer" });
-      }
-    },
-    // Conquest test helpers
-    CONQUEST_FACTION,
-    CONQUEST_PHASE
-  };
-
-  if (e2eEnabled) {
-    (window as any).__xwingzTest = {
-      godMode(_on = true) {
-        // Implementation moved to FlightMode - could add method there
-      },
-      killAllEnemies() {
+    // Read-only game state getters (dev tools only)
+    (window as any).__xwingz = {
+      get mode() { return currentMode; },
+      get scenario() {
         const flight = modeHandlers.flight as FlightMode;
-        flight.killAllEnemiesForTest(game.world);
+        return flight.currentScenario;
       },
-      failBase() {
+      get yavinPhase() {
         const flight = modeHandlers.flight as FlightMode;
-        flight.failBaseForTest(game.world);
+        return flight.yavinPhase;
       },
-      destroyStarDestroyer() {
+      get starDestroyerPhase() {
         const flight = modeHandlers.flight as FlightMode;
-        flight.destroyStarDestroyerForTest(game.world);
-      }
+        return flight.starDestroyerPhase;
+      },
+      get capitalShipCount() {
+        const flight = modeHandlers.flight as FlightMode;
+        return flight.capitalShipCount;
+      },
+      get targetCount() {
+        const flight = modeHandlers.flight as FlightMode;
+        return flight.targetCount;
+      },
+      get allyCount() {
+        const flight = modeHandlers.flight as FlightMode;
+        return flight.allyCount;
+      },
+      get projectileCount() {
+        const flight = modeHandlers.flight as FlightMode;
+        return flight.projectileCount;
+      },
+      get planetCount() { return PLANETS.length; },
+      get credits() { return profile.credits; },
+      // Expose Yavin system for tests
+      get yavinSystem() { return YAVIN_DEFENSE_SYSTEM; },
+      // Conquest mode state getters
+      get conquestState() {
+        const conquest = modeHandlers.conquest as ConquestMode;
+        if (currentMode !== "conquest" || !conquest.simulation) return null;
+        return conquest.simulation.getOverview();
+      },
+      get conquestPlanets() {
+        const conquest = modeHandlers.conquest as ConquestMode;
+        if (currentMode !== "conquest" || !conquest.simulation) return [];
+        return conquest.simulation.getPlanets();
+      },
+      get conquestFleets() {
+        const conquest = modeHandlers.conquest as ConquestMode;
+        if (currentMode !== "conquest" || !conquest.simulation) return [];
+        return conquest.simulation.getFleets();
+      },
+      get selectedPlanetIndex() {
+        const conquest = modeHandlers.conquest as ConquestMode;
+        return conquest.selectedPlanetIndex ?? -1;
+      },
+      // Mode transition helpers for tests
+      enterFlight(system: SystemDef, scenario: "sandbox" | "yavin_defense" | "destroy_star_destroyer" = "sandbox") {
+        requestModeChange("flight", { type: "flight", system, scenario });
+      },
+      enterMap() {
+        requestModeChange("map", { type: "map" });
+      },
+      enterGround() {
+        requestModeChange("ground", { type: "ground" });
+      },
+      enterConquest() {
+        requestModeChange("conquest", { type: "conquest" });
+      },
+      // Quick access to Star Destroyer mission
+      enterStarDestroyer() {
+        const coruscant = PLANETS.find(p => p.id === "coruscant");
+        if (coruscant) {
+          const system = planetToSystem(coruscant);
+          requestModeChange("flight", { type: "flight", system, scenario: "destroy_star_destroyer" });
+        }
+      },
+      // Conquest test helpers
+      CONQUEST_FACTION,
+      CONQUEST_PHASE
     };
+
+    // Destructive test actions - only with explicit ?e2e=1 param
+    if (e2eEnabled) {
+      (window as any).__xwingzTest = {
+        godMode(_on = true) {
+          // Implementation moved to FlightMode - could add method there
+        },
+        killAllEnemies() {
+          const flight = modeHandlers.flight as FlightMode;
+          flight.killAllEnemiesForTest(game.world);
+        },
+        failBase() {
+          const flight = modeHandlers.flight as FlightMode;
+          flight.failBaseForTest(game.world);
+        },
+        destroyStarDestroyer() {
+          const flight = modeHandlers.flight as FlightMode;
+          flight.destroyStarDestroyerForTest(game.world);
+        }
+      };
+    }
+  } catch {
+    // ignore
   }
-} catch {
-  // ignore
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ import {
   targetingSystem,
   weaponSystem,
   projectileSystem,
-  rebuildTargetSpatialHash,
+  rebuildSpaceCombatIndex,
   shieldRegenSystem,
   consumeImpactEvents,
   Health,
@@ -40,8 +40,7 @@ import {
   turretFireSystem,
   turretProjectileSystem,
   subsystemEffectsSystem,
-  parentChildTransformSystem,
-  rebuildFighterSpatialHash
+  parentChildTransformSystem
 } from "@xwingz/gameplay";
 import type { ModeHandler, ModeContext, ModeTransitionData, FlightScenario } from "./types";
 import { isFlightTransition } from "./types";
@@ -509,8 +508,7 @@ export class FlightMode implements ModeHandler {
     spaceflightSystem(ctx.world, this.simInput, dt);
     weaponSystem(ctx.world, this.simInput, dt);
     aiWeaponSystem(ctx.world, dt);
-    rebuildTargetSpatialHash(ctx.world);
-    rebuildFighterSpatialHash(ctx.world);
+    rebuildSpaceCombatIndex(ctx.world);  // Unified spatial index for all collision queries
     projectileSystem(ctx.world, dt);
     weaponSwitchSystem(ctx.world, this.simInput);
     torpedoLockSystem(ctx.world, this.simInput, dt);

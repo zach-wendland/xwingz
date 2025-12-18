@@ -51,6 +51,8 @@ import {
   getTorpedoProjectiles
 } from '../../../packages/gameplay/src/space/systems';
 
+import { isPooled } from '../../../packages/gameplay/src/space/projectile-pool';
+
 import type { SpaceInputState } from '../../../packages/gameplay/src/space/input';
 
 // Default neutral input state
@@ -495,7 +497,7 @@ describe('Space Combat Systems', () => {
       expect(Transform.z[proj]).toBeCloseTo(-20, 1);
     });
 
-    it('should remove projectiles when life expires', () => {
+    it('should pool projectiles when life expires', () => {
       const world = createWorld();
       const proj = createProjectile(world, -1, 0, 0, 0, 0, 0, 0);
       Projectile.life[proj] = 0.05;
@@ -503,7 +505,8 @@ describe('Space Combat Systems', () => {
       rebuildTargetSpatialHash(world);
       projectileSystem(world, 0.1);
 
-      expect(hasComponent(world, Projectile, proj)).toBe(false);
+      // Projectile is returned to pool, not removed
+      expect(isPooled(world, proj)).toBe(true);
     });
 
     it('should damage targets on collision', () => {
@@ -524,7 +527,8 @@ describe('Space Combat Systems', () => {
       projectileSystem(world, 0.016);
 
       expect(Health.hp[target]).toBe(initialHp - 15);
-      expect(hasComponent(world, Projectile, proj)).toBe(false);
+      // Projectile is returned to pool, not removed
+      expect(isPooled(world, proj)).toBe(true);
     });
 
     it('should damage shields before health', () => {

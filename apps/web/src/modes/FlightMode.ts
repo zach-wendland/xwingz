@@ -10,7 +10,10 @@
 import * as THREE from "three";
 import { removeEntity, hasComponent } from "bitecs";
 import { AssetLoader, KENNEY_ASSETS } from "@xwingz/render";
+import { createLogger } from "@xwingz/core";
 import type { SystemDef } from "@xwingz/procgen";
+
+const log = createLogger("FlightMode");
 import {
   createSpaceInput,
   type SpaceInputState,
@@ -170,7 +173,7 @@ export class FlightMode implements ModeHandler {
         this.assetsReady = true;
       })
       .catch((err) => {
-        console.warn("[FlightMode] Failed to load turret assets:", err);
+        log.warn("Failed to load turret assets:", err);
       });
 
     // Setup lighting

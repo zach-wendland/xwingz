@@ -14,7 +14,10 @@
  */
 
 import * as THREE from "three";
+import { createLogger } from "@xwingz/core";
 import { AssetLoader, getAssetLoader, KENNEY_ASSETS } from "./AssetLoader";
+
+const log = createLogger("ShipModels");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -157,7 +160,7 @@ const gltfCache = new Map<string, THREE.Group>();
 export async function getShipModel(config: ShipModelConfig): Promise<THREE.Group> {
   const def = MODEL_REGISTRY[config.type];
   if (!def) {
-    console.warn(`Unknown ship type: ${config.type}, using transport fallback`);
+    log.warn(`Unknown ship type: ${config.type}, using transport fallback`);
     return createProceduralShip({ type: "transport" });
   }
 
@@ -174,7 +177,7 @@ export async function getShipModel(config: ShipModelConfig): Promise<THREE.Group
       gltfCache.set(def.gltfPath, model);
       return applyShipConfig(model.clone(), config, def);
     } catch (err) {
-      console.warn(`Failed to load GLTF for ${config.type}, using procedural:`, err);
+      log.warn(`Failed to load GLTF for ${config.type}, using procedural:`, err);
     }
   }
 
@@ -192,7 +195,7 @@ export async function getShipModel(config: ShipModelConfig): Promise<THREE.Group
       gltfCache.set(assetPath, model);
       return applyShipConfig(model.clone(), config, def);
     } catch (err) {
-      console.warn(`Failed to load Kenney asset for ${config.type}, using procedural:`, err);
+      log.warn(`Failed to load Kenney asset for ${config.type}, using procedural:`, err);
     }
   }
 
@@ -207,7 +210,7 @@ export async function getShipModel(config: ShipModelConfig): Promise<THREE.Group
 export function createProceduralShip(config: ShipModelConfig): THREE.Group {
   const def = MODEL_REGISTRY[config.type];
   if (!def) {
-    console.warn(`Unknown ship type: ${config.type}, using transport fallback`);
+    log.warn(`Unknown ship type: ${config.type}, using transport fallback`);
     return createProceduralShip({ type: "transport" });
   }
 

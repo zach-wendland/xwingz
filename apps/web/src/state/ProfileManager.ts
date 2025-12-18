@@ -8,6 +8,10 @@
  * - Debounced saves to reduce write frequency
  */
 
+import { createLogger } from "@xwingz/core";
+
+const log = createLogger("ProfileManager");
+
 export type Upgrades = {
   engine: number;
   maneuver: number;
@@ -187,9 +191,7 @@ function saveToLocalStorage(payload: VersionedProfile): boolean {
     return true;
   } catch (e) {
     // Quota exceeded or storage disabled
-    if (import.meta.env.DEV) {
-      console.warn("[ProfileManager] localStorage save failed:", e);
-    }
+    log.warn("localStorage save failed:", e);
     return false;
   }
 }
@@ -234,9 +236,7 @@ export function saveProfile(profile: Profile): void {
   if (!localSaved) {
     saveToIDB(payload).catch(() => {
       // Both storage methods failed - data may be lost
-      if (import.meta.env.DEV) {
-        console.error("[ProfileManager] All storage methods failed!");
-      }
+      log.error("All storage methods failed!");
     });
   }
 }

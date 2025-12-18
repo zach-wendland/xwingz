@@ -16,9 +16,12 @@ import {
   consumeSubsystemDestroyedEvents
 } from "@xwingz/gameplay";
 import { AssetLoader, KENNEY_ASSETS, createProceduralShip } from "@xwingz/render";
+import { createLogger } from "@xwingz/core";
 import { disposeObject } from "../../rendering/MeshManager";
 import type { ModeContext } from "../types";
 import type { ExplosionManager } from "../../rendering/effects";
+
+const log = createLogger("CapitalShipController");
 
 // Local copies of const enums
 const SubsystemType = {
@@ -61,9 +64,9 @@ export class CapitalShipController {
         KENNEY_ASSETS.TURRET_DOUBLE,
       ]);
       this.assetsReady = true;
-      console.log('[CapitalShipController] Turret assets loaded');
+      log.info("Turret assets loaded");
     } catch (err) {
-      console.warn('[CapitalShipController] Failed to load turret assets, using procedural:', err);
+      log.warn("Failed to load turret assets, using procedural:", err);
     }
   }
 

@@ -241,9 +241,11 @@ describe('ShipModels', () => {
       const ship = createProceduralShip({ type: 'unknown_ship' as ShipType });
 
       expect(ship).toBeInstanceOf(THREE.Group);
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Unknown ship type')
-      );
+      // Logger outputs: "[ShipModels]", "Unknown ship type: ..."
+      expect(consoleWarnSpy).toHaveBeenCalled();
+      const call = consoleWarnSpy.mock.calls[0];
+      const fullMessage = call?.join(' ') ?? '';
+      expect(fullMessage).toContain('Unknown ship type');
 
       consoleWarnSpy.mockRestore();
     });

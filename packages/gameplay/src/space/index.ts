@@ -4,6 +4,7 @@ export * from "./input";
 export * from "./systems";
 export * from "./capital-systems";
 export * from "./spatial-index";
+export * from "./projectile-pool";
 export * from "./coruscant-systems";
 export * from "./coruscant-runtime";
 export * from "./objective-types";

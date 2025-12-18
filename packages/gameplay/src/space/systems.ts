@@ -22,6 +22,7 @@ import {
 } from "./components";
 import type { SpaceInputState } from "./input";
 import { spaceCombatIndex } from "./spatial-index";
+import { acquireProjectile, releaseProjectile, isPooled } from "./projectile-pool";
 
 export type ImpactEvent = {
   x: number;
@@ -295,10 +296,8 @@ function fireLaser(world: IWorld, shooterEid: number, targetEid: number) {
   const svz = Velocity.vz[shooterEid] ?? 0;
 
   for (const [mx, my, mz] of mounts) {
-    const pid = addEntity(world);
-    addComponent(world, Transform, pid);
-    addComponent(world, Velocity, pid);
-    addComponent(world, Projectile, pid);
+    // Use projectile pool for better performance
+    const pid = acquireProjectile(world, 0); // 0 = laser type
 
     Transform.qx[pid] = tmpShotQ.x;
     Transform.qy[pid] = tmpShotQ.y;
@@ -391,11 +390,15 @@ export function projectileSystem(world: IWorld, dt: number) {
   const ps = projectileQuery(world);
 
   for (const eid of ps) {
+    // Skip pooled (inactive) projectiles
+    if (isPooled(world, eid)) continue;
+
     const life0 = Projectile.life[eid] ?? 0;
     const life = life0 - dt;
     Projectile.life[eid] = life;
     if (life <= 0) {
-      removeEntity(world, eid);
+      // Return to pool instead of removing
+      releaseProjectile(world, eid, 0);
       continue;
     }
 
@@ -440,7 +443,8 @@ export function projectileSystem(world: IWorld, dt: number) {
         } else {
           Health.hp[tid] = (Health.hp[tid] ?? 0) - dmg;
         }
-        removeEntity(world, eid);
+        // Return projectile to pool instead of removing
+        releaseProjectile(world, eid, 0);
         const killed = (Health.hp[tid] ?? 0) <= 0;
         impactEvents.push({ x: px, y: py, z: pz, team: ownerTeam, killed: killed ? 1 : 0 });
         if (killed) {
@@ -770,7 +774,8 @@ export function shieldRegenSystem(world: IWorld, dt: number) {
 }
 
 export function getProjectiles(world: IWorld) {
-  return projectileQuery(world);
+  // Filter out pooled (inactive) projectiles
+  return projectileQuery(world).filter(eid => !isPooled(world, eid));
 }
 
 export function getTargetables(world: IWorld) {

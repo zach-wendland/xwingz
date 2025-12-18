@@ -150,24 +150,21 @@ export function rebuildSpaceCombatIndex(world: IWorld): void {
 }
 
 // Legacy exports for gradual migration
-// These will be removed after full migration
+// These always rebuild to maintain backwards compatibility with existing code/tests
 
 /**
- * @deprecated Use spaceCombatIndex.queryCombatants() instead
+ * @deprecated Use rebuildSpaceCombatIndex() instead
  */
 export function rebuildTargetSpatialHash(world: IWorld): void {
-  // Only rebuild if not already done this frame
-  if (!spaceCombatIndex.wasRebuiltThisFrame()) {
-    spaceCombatIndex.rebuild(world);
-  }
+  // Always rebuild for backwards compatibility
+  // The per-frame optimization is handled by rebuildSpaceCombatIndex()
+  spaceCombatIndex.rebuild(world);
 }
 
 /**
- * @deprecated Use spaceCombatIndex.queryCombatants() instead
+ * @deprecated Use rebuildSpaceCombatIndex() instead
  */
 export function rebuildFighterSpatialHash(world: IWorld): void {
-  // Only rebuild if not already done this frame
-  if (!spaceCombatIndex.wasRebuiltThisFrame()) {
-    spaceCombatIndex.rebuild(world);
-  }
+  // Always rebuild for backwards compatibility
+  spaceCombatIndex.rebuild(world);
 }

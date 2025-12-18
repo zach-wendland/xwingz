@@ -205,7 +205,7 @@ describe('Space Combat Systems', () => {
       expect(Transform.z[eid]).toBe(0);
       expect(Ship.maxSpeed[eid]).toBe(250);
       expect(Ship.accel[eid]).toBe(120);
-      expect(Health.hp[eid]).toBe(120);
+      expect(Health.hp[eid]).toBe(360); // 3x base for turret survivability
       expect(TorpedoLauncher.ammo[eid]).toBe(6);
     });
 

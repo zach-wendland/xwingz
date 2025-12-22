@@ -13,7 +13,7 @@
  */
 
 import { defineComponent, Types, IWorld, addEntity, addComponent, removeEntity, hasComponent, defineQuery } from "bitecs";
-import { Quaternion, Vector3, Euler } from "three";
+import { Quaternion, Vector3, Euler } from "@xwingz/core";
 import { createRng, deriveSeed } from "@xwingz/procgen";
 import {
   Transform,

@@ -21,11 +21,6 @@
     "@xwingz/core": "file:../core",
     "@xwingz/procgen": "file:../procgen",
     "@xwingz/data": "file:../data",
-    "@xwingz/render": "file:../render",
-    "@xwingz/physics": "file:../physics",
-    "three": "^0.161.0"
-  },
-  "devDependencies": {
-    "@types/three": "^0.161.0"
+    "@xwingz/physics": "file:../physics"
   }
 }

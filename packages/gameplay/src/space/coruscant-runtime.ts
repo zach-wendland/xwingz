@@ -53,7 +53,7 @@
 
 import type { IWorld } from "bitecs";
 import { hasComponent, removeEntity } from "bitecs";
-import { Vector3 } from "three";
+import { Vector3 } from "@xwingz/core";
 import type {
   CoruscantMissionDef,
   CoruscantMissionPhase,

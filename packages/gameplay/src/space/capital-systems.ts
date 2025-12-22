@@ -1,5 +1,5 @@
 import { IWorld, addEntity, addComponent, defineQuery, removeEntity, hasComponent } from "bitecs";
-import { Quaternion, Vector3 } from "three";
+import { Quaternion, Vector3 } from "@xwingz/core";
 import {
   Transform,
   Velocity,

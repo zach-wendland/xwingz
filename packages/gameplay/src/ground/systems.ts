@@ -7,7 +7,7 @@ import {
   hasComponent,
   removeEntity
 } from "bitecs";
-import { Vector3, Quaternion } from "three";
+import { Vector3, Quaternion } from "@xwingz/core";
 import type { PhysicsWorld } from "@xwingz/physics";
 import { createRng, deriveSeed } from "@xwingz/procgen";
 

@@ -383,7 +383,8 @@ export class FlightMode implements ModeHandler {
     this.targetEids = [];
     const yavinState = this.yavinHandler.getYavinState();
     if (yavinState && yavinState.phase === "combat") {
-      yavinState.enemiesKilled = yavinState.enemiesTotal;
+      // Force mission success for E2E testing (bypasses objective system)
+      this.yavinHandler.forceMissionSuccessForTest();
     }
     const sdState = this.starDestroyerHandler.getMissionState();
     if (sdState) {
@@ -396,6 +397,8 @@ export class FlightMode implements ModeHandler {
     if (baseEid !== null && hasComponent(world, Health, baseEid)) {
       Health.hp[baseEid] = 0;
     }
+    // Force mission failure for E2E testing (bypasses objective system)
+    this.yavinHandler.forceMissionFailureForTest();
   }
 
   destroyStarDestroyerForTest(world: import("bitecs").IWorld): void {

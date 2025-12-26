@@ -72,6 +72,11 @@ export class ConquestMode implements ModeHandler {
   private pointerMoveHandler: ((e: PointerEvent) => void) | null = null;
   private clickHandler: ((e: MouseEvent) => void) | null = null;
 
+  // HUD state cache (for change detection)
+  private lastHudState = "";
+  private hudUpdateTimer = 0;
+  private readonly HUD_UPDATE_INTERVAL = 0.1; // Update HUD every 100ms max
+
   // Reusable objects (avoid allocations)
   // private tmpVec3 = new THREE.Vector3();
   // private tmpColor = new THREE.Color();
@@ -129,8 +134,12 @@ export class ConquestMode implements ModeHandler {
     ctx.controls.update();
     ctx.renderer.render(ctx.scene, ctx.camera);
 
-    // Update HUD periodically
-    this.updateHud(ctx);
+    // Update HUD with rate limiting
+    this.hudUpdateTimer += dt;
+    if (this.hudUpdateTimer >= this.HUD_UPDATE_INTERVAL) {
+      this.hudUpdateTimer = 0;
+      this.updateHudIfChanged(ctx);
+    }
   }
 
   exit(ctx: ModeContext): void {
@@ -575,7 +584,11 @@ export class ConquestMode implements ModeHandler {
     let trail = this.hyperspaceTrails.get(fleetEid);
 
     if (!trail) {
+      // Create geometry with pre-allocated buffer (reused across frames)
+      const positions = new Float32Array(6); // 2 points x 3 components
       const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
       const material = new THREE.LineBasicMaterial({
         color: FACTION_COLORS[faction as keyof typeof FACTION_COLORS],
         transparent: true,
@@ -586,12 +599,16 @@ export class ConquestMode implements ModeHandler {
       this.hyperspaceTrails.set(fleetEid, trail);
     }
 
-    const positions = new Float32Array([
-      start.x, start.y, start.z,
-      current.x, current.y, current.z
-    ]);
-    trail.geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    trail.geometry.attributes.position!.needsUpdate = true;
+    // Update existing buffer in-place (no new allocations)
+    const posAttr = trail.geometry.attributes.position as THREE.BufferAttribute;
+    const arr = posAttr.array as Float32Array;
+    arr[0] = start.x;
+    arr[1] = start.y;
+    arr[2] = start.z;
+    arr[3] = current.x;
+    arr[4] = current.y;
+    arr[5] = current.z;
+    posAttr.needsUpdate = true;
   }
 
   private updateBattleIndicators(scene: THREE.Scene, _dt: number): void {
@@ -799,8 +816,11 @@ export class ConquestMode implements ModeHandler {
   // HUD
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private updateHud(ctx: ModeContext): void {
-    if (!this.simulation) return;
+  /**
+   * Build the HUD text (separate from DOM update for change detection)
+   */
+  private buildHudText(): string {
+    if (!this.simulation) return "";
 
     const overview = this.simulation.getOverview();
     const phaseName = this.getPhaseName(overview.phase);
@@ -830,9 +850,27 @@ export class ConquestMode implements ModeHandler {
     }
 
     hudText += `\nESC: Return to map | SPACE: Pause | +/-: Speed`;
+    return hudText;
+  }
 
-    ctx.hud.className = "hud-conquest";
-    ctx.hud.innerText = hudText;
+  /**
+   * Update HUD only if content has changed (avoid DOM thrashing)
+   */
+  private updateHudIfChanged(ctx: ModeContext): void {
+    const hudText = this.buildHudText();
+    if (hudText !== this.lastHudState) {
+      this.lastHudState = hudText;
+      ctx.hud.className = "hud-conquest";
+      ctx.hud.innerText = hudText;
+    }
+  }
+
+  /**
+   * Force HUD update (for initial render and after user actions)
+   */
+  private updateHud(ctx: ModeContext): void {
+    this.lastHudState = ""; // Force update
+    this.updateHudIfChanged(ctx);
   }
 
   private getPhaseName(phase: number): string {

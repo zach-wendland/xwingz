@@ -787,6 +787,32 @@ export class YavinDefenseScenario {
     return this.terrainHeight(x, z);
   }
 
+  /**
+   * E2E Test Helper: Force mission success immediately
+   * This bypasses the objective system for quick E2E testing
+   */
+  forceMissionSuccessForTest(): void {
+    if (!this.yavin) return;
+
+    this.yavin.phase = "success";
+    this.yavin.message = "VICTORY (E2E TEST)";
+    this.yavin.messageTimer = 6;
+    this.yavin.enemiesKilled = this.yavin.enemiesTotal;
+    this.waveEnemyTypes.clear();
+  }
+
+  /**
+   * E2E Test Helper: Force mission failure immediately
+   * This bypasses the objective system for quick E2E testing
+   */
+  forceMissionFailureForTest(): void {
+    if (!this.yavin) return;
+
+    this.yavin.phase = "fail";
+    this.yavin.message = "MISSION FAILED (E2E TEST)";
+    this.yavin.messageTimer = 8;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Terrain Building
   // ─────────────────────────────────────────────────────────────────────────────

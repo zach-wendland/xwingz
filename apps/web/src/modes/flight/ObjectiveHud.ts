@@ -198,6 +198,7 @@ export class ObjectiveHud {
   private objectiveList: HTMLDivElement;
   private styleElement: HTMLStyleElement | null = null;
   private lastProgressValues: Map<string, number> = new Map();
+  private lastStateFingerprint = "";
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -219,10 +220,46 @@ export class ObjectiveHud {
   }
 
   /**
+   * Build a fingerprint of the current state for change detection
+   */
+  private buildStateFingerprint(tracker: ObjectiveTracker): string {
+    const active = tracker.getActiveObjective();
+    const pending = tracker.getObjectivesByStatus(ObjectiveStatus.PENDING).slice(0, 2);
+    const completed = tracker.getObjectivesByStatus(ObjectiveStatus.COMPLETED).slice(-2);
+    const optional = tracker.getOptionalObjectives();
+
+    // Build a compact fingerprint from objective IDs, statuses, and progress
+    const parts: string[] = [];
+
+    if (active) {
+      parts.push(`A:${active.definition.id}:${active.progress}:${active.status}`);
+    }
+    for (const obj of pending) {
+      parts.push(`P:${obj.definition.id}`);
+    }
+    for (const obj of completed) {
+      parts.push(`C:${obj.definition.id}`);
+    }
+    for (const obj of optional) {
+      parts.push(`O:${obj.definition.id}:${obj.progress}:${obj.status}`);
+    }
+
+    return parts.join("|");
+  }
+
+  /**
    * Update the HUD based on tracker state
+   * Uses fingerprinting to skip DOM updates when state hasn't changed
    */
   update(tracker: ObjectiveTracker, _dt: number): void {
-    // Clear and rebuild
+    // Check if state has changed
+    const fingerprint = this.buildStateFingerprint(tracker);
+    if (fingerprint === this.lastStateFingerprint) {
+      return; // No changes, skip DOM update
+    }
+    this.lastStateFingerprint = fingerprint;
+
+    // Clear and rebuild (only when state changed)
     this.objectiveList.innerHTML = "";
 
     // Render active objective first

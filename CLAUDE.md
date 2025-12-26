@@ -73,6 +73,8 @@ rm -rf .turbo                               # Clear Turborepo cache
   - `components.ts` - Fighter/bomber ECS components
   - `systems.ts` - Per-frame systems (movement, combat, spawning)
   - `objective-types.ts`, `objective-tracker.ts`, `kill-tracker.ts` - Mission objective system
+  - `projectile-pool.ts` - Object pooling for projectile entities (reduces GC pressure)
+  - `spatial-index.ts` - Unified spatial hashing for collision/targeting queries
 - `ground/` - Infantry combat (Battlefront-style)
   - `components.ts` - Soldier, CharacterController, BlasterWeapon, CommandPost
   - `systems.ts` - Ground movement, capture points, AI state machine
@@ -234,6 +236,70 @@ rng.int(min, max);                    // Integer in range (inclusive)
 - Use entity IDs as seeds for per-entity variation
 - Visual-only effects (starfields, particles) can use fixed seeds
 - Procgen uses the seed system from `@xwingz/procgen`
+
+## Logging
+
+Use the conditional logger instead of raw `console.*` calls:
+
+```typescript
+import { createLogger, LogLevel, setLogLevel } from '@xwingz/core';
+
+const log = createLogger("ModuleName");
+log.debug("Verbose details");  // Only in DEBUG mode
+log.info("General info");      // DEBUG or INFO mode
+log.warn("Warnings");          // DEBUG, INFO, or WARN mode (default)
+log.error("Errors");           // Always shown (except NONE)
+
+// Control log level globally
+setLogLevel(LogLevel.DEBUG);   // Enable all logs
+```
+
+**Rules:**
+- **NEVER** use raw `console.log/warn/error` in gameplay or render code
+- Use tagged loggers (`createLogger("Tag")`) for module-specific output
+- Default level is WARN in production, DEBUG in development
+
+## Object Pooling
+
+Projectile entities use object pooling to reduce GC pressure:
+
+```typescript
+import { acquireProjectile, releaseProjectile, isPooled, initProjectilePool } from '@xwingz/gameplay';
+
+// On game init
+initProjectilePool(world);  // Pre-allocates 64 entities
+
+// Spawn projectile (reuses pooled entity or creates new)
+const eid = acquireProjectile(world, 0);  // 0=laser, 1=torpedo
+
+// Return to pool instead of removeEntity()
+releaseProjectile(world, eid, 0);
+
+// Check if entity is pooled (inactive)
+if (isPooled(world, eid)) { /* skip processing */ }
+```
+
+**Pool Behavior:**
+- Pre-allocates 64 laser projectiles at init
+- Max pool size: 512 entities per type
+- Pooled entities have `Pooled` component and are moved off-screen
+- `getProjectiles()` automatically filters out pooled entities
+
+## Spatial Indexing
+
+Space combat uses a unified spatial index for collision and targeting:
+
+```typescript
+import { rebuildSpaceCombatIndex, spaceCombatIndex } from '@xwingz/gameplay';
+
+// Call once per frame before queries
+rebuildSpaceCombatIndex(world);
+
+// Query nearby entities
+const nearby = spaceCombatIndex.queryCombatants(x, y, z, radius);
+const enemies = spaceCombatIndex.queryEnemies(world, x, y, z, radius, myTeam);
+const aiOnly = spaceCombatIndex.queryAIEntities(x, y, z, radius);
+```
 
 ## Coding Conventions
 

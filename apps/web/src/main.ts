@@ -14,6 +14,7 @@ import { loadProfile, saveProfile, scheduleSave, type Profile } from "./state/Pr
 import { MapMode, FlightMode, GroundMode, ConquestMode } from "./modes";
 import type { Mode, ModeHandler, ModeContext, ModeTransitionData } from "./modes";
 import { CONQUEST_FACTION, CONQUEST_PHASE } from "@xwingz/gameplay";
+import { UpgradesOverlay } from "./ui";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOM Setup
@@ -121,6 +122,23 @@ const modeContext: ModeContext = {
 
 // Save on unload
 window.addEventListener("beforeunload", () => saveProfile(profile));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Upgrades Overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+const upgradesOverlay = new UpgradesOverlay(overlay, profile, {
+  onPurchase: () => scheduleSave(profile)
+});
+
+// Global 'U' key handler for upgrades overlay (only in map mode)
+window.addEventListener("keydown", (e) => {
+  if (e.key === "u" || e.key === "U") {
+    if (currentMode === "map") {
+      upgradesOverlay.toggle();
+    }
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // E2E Test Hooks (Development/Test Only)

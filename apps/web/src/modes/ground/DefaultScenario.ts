@@ -97,16 +97,23 @@ export class DefaultScenario implements GroundScenarioHandler {
   // ─────────────────────────────────────────────────────────────────────────────
 
   private buildDefaultTerrain(gctx: GroundContext): void {
-    const groundGeo = new THREE.PlaneGeometry(200, 200);
+    // FIX: Add segments for better visual definition
+    const groundGeo = new THREE.PlaneGeometry(200, 200, 20, 20);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x556644,
-      roughness: 0.95
+      color: 0x667744, // FIX: Brighter greenish-brown (was 0x556644)
+      roughness: 0.85,
+      metalness: 0.0
     });
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
+    ground.castShadow = false; // Ground doesn't cast shadows
     gctx.ctx.scene.add(ground);
     gctx.groundMesh = ground;
+
+    // FIX: Add grid helper for visual reference (removable later)
+    const gridHelper = new THREE.GridHelper(200, 20, 0x444444, 0x222222);
+    gctx.ctx.scene.add(gridHelper);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

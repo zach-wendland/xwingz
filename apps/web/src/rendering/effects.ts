@@ -43,7 +43,8 @@ let boltMatEnemy: THREE.MeshBasicMaterial | null = null;
 
 export function getBoltGeometry(): THREE.CylinderGeometry {
   if (!boltGeo) {
-    boltGeo = new THREE.CylinderGeometry(0.28, 0.28, 12, 6);
+    // FIX: Increased bolt radius from 0.28 to 0.8 (much more visible)
+    boltGeo = new THREE.CylinderGeometry(0.8, 0.8, 12, 6);
   }
   return boltGeo;
 }
@@ -84,7 +85,8 @@ export function makeBoltGlow(color: number): THREE.Sprite {
     depthWrite: false
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.setScalar(6.5);
+  // FIX: Increased glow from 6.5 to 10 (more visible laser bolts)
+  sprite.scale.setScalar(10);
   sprite.renderOrder = 9;
   return sprite;
 }

@@ -10,35 +10,27 @@
 
 import * as THREE from "three";
 import { PLANETS, planetToSystem } from "@xwingz/data";
-import { CONQUEST_FACTION, CONQUEST_PHASE } from "@xwingz/gameplay";
-import { SeededRNG } from "@xwingz/core";
-import { getPlanetTexture, clearPlanetTextureCache, createProceduralShip } from "@xwingz/render";
+import { clearPlanetTextureCache } from "@xwingz/render";
 import type { ModeHandler, ModeContext, ModeTransitionData } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
 import {
   GalaxySimulation,
-  type GalaxyPlanetState,
-  type GalaxyFleetState
+  type GalaxyPlanetState
 } from "../conquest/GalaxySimulation";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
-
-const GALAXY_SCALE = 1000;
-
-// Faction colors (Empire uses Imperial blue/gray per Star Wars canon)
-const FACTION_COLORS = {
-  [CONQUEST_FACTION.NEUTRAL]: 0x888888,
-  [CONQUEST_FACTION.REBEL]: 0xff6644,
-  [CONQUEST_FACTION.EMPIRE]: 0x4488ff  // Imperial blue (green reserved for lasers)
-} as const;
-
-const FACTION_GLOW = {
-  [CONQUEST_FACTION.NEUTRAL]: 0x444444,
-  [CONQUEST_FACTION.REBEL]: 0xff2200,
-  [CONQUEST_FACTION.EMPIRE]: 0x2266ff  // Imperial blue glow
-} as const;
+// Import extracted modules
+import {
+  setupConquestLighting,
+  buildConquestStarfield,
+  buildConquestNebula,
+  createConquestPlanetMesh,
+  buildSelectionRing,
+  updateSelectionRing
+} from "./conquest";
+import { updateFleetVisuals } from "./conquest/ConquestFleetRenderer";
+import { updateBattleIndicators } from "./conquest/ConquestBattleIndicators";
+import { updatePlanetVisuals } from "./conquest/ConquestPlanetVisuals";
+import { buildConquestHudText } from "./conquest/ConquestHud";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ConquestMode Class
@@ -77,10 +69,6 @@ export class ConquestMode implements ModeHandler {
   private hudUpdateTimer = 0;
   private readonly HUD_UPDATE_INTERVAL = 0.1; // Update HUD every 100ms max
 
-  // Reusable objects (avoid allocations)
-  // private tmpVec3 = new THREE.Vector3();
-  // private tmpColor = new THREE.Color();
-
   enter(ctx: ModeContext, _data?: ModeTransitionData): void {
     ctx.controls.enabled = true;
 
@@ -88,7 +76,7 @@ export class ConquestMode implements ModeHandler {
     ctx.scene.clear();
 
     // Setup lighting
-    this.setupLighting(ctx.scene);
+    setupConquestLighting(ctx.scene);
 
     // Setup camera
     ctx.camera.position.set(0, 400, 800);
@@ -96,13 +84,13 @@ export class ConquestMode implements ModeHandler {
 
     // Initialize simulation
     this.simulation = new GalaxySimulation(ctx.world);
-    this.simulation.initialize(42, CONQUEST_FACTION.REBEL);
+    this.simulation.initialize(42, 0); // CONQUEST_FACTION.REBEL = 0
 
     // Build visual galaxy
-    this.buildStarfield(ctx.scene);
-    this.buildNebula(ctx.scene);
+    this.starfield = buildConquestStarfield(ctx.scene);
+    this.nebula = buildConquestNebula(ctx.scene);
     this.buildPlanets(ctx.scene);
-    this.buildSelectionRing(ctx.scene);
+    this.selectionRing = buildSelectionRing(ctx.scene);
 
     // Attach input handlers
     this.attachInputHandlers(ctx);
@@ -120,10 +108,16 @@ export class ConquestMode implements ModeHandler {
     }
 
     // Update visual state
-    this.updatePlanetVisuals();
-    this.updateFleetVisuals(ctx.scene);
-    this.updateBattleIndicators(ctx.scene, dt);
-    this.updateSelectionRing();
+    updatePlanetVisuals(this.simulation.getPlanets(), this.planetMeshes);
+    updateFleetVisuals(
+      ctx.scene,
+      this.simulation.getFleets(),
+      this.simulation.getPlanets(),
+      this.fleetMeshes,
+      this.hyperspaceTrails
+    );
+    updateBattleIndicators(ctx.scene, this.simulation.getPlanets(), this.battleIndicators);
+    updateSelectionRing(this.selectionRing, this.selectedPlanetIndex, this.planetMeshes);
 
     // Rotate nebula slowly
     if (this.nebula) {
@@ -144,6 +138,10 @@ export class ConquestMode implements ModeHandler {
 
   exit(ctx: ModeContext): void {
     this.detachInputHandlers();
+
+    // CRITICAL FIX: Clear HUD text and className to prevent persistence
+    ctx.hud.innerText = "";
+    ctx.hud.className = "";
 
     // Cleanup meshes (including sprite textures)
     for (const group of this.planetMeshes) {
@@ -213,485 +211,16 @@ export class ConquestMode implements ModeHandler {
   // Scene Setup
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private setupLighting(scene: THREE.Scene): void {
-    // Ambient for base visibility
-    scene.add(new THREE.AmbientLight(0x303050, 0.6));
-
-    // Main directional (sun-like)
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    sun.position.set(500, 800, 400);
-    scene.add(sun);
-
-    // Blue fill light
-    const fill = new THREE.DirectionalLight(0x4488ff, 0.5);
-    fill.position.set(-400, -200, -500);
-    scene.add(fill);
-
-    // Central galactic glow
-    const coreGlow = new THREE.PointLight(0xffffcc, 0.8, 1200, 1.2);
-    coreGlow.position.set(0, 100, 0);
-    scene.add(coreGlow);
-  }
-
-  private buildStarfield(scene: THREE.Scene): void {
-    const count = 4000;
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
-    // Use fixed seed for deterministic starfield
-    const rng = new SeededRNG(42);
-
-    for (let i = 0; i < count; i++) {
-      const r = 3000 + rng.next() * 12000;
-      const theta = rng.next() * Math.PI * 2;
-      const phi = Math.acos(rng.next() * 2 - 1);
-
-      positions[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = r * Math.cos(phi);
-
-      // Color variation - blue/white stars
-      const brightness = 0.6 + rng.next() * 0.4;
-      colors[i * 3 + 0] = brightness * (0.8 + rng.next() * 0.2);
-      colors[i * 3 + 1] = brightness * (0.85 + rng.next() * 0.15);
-      colors[i * 3 + 2] = brightness;
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-
-    const material = new THREE.PointsMaterial({
-      size: 2.5,
-      sizeAttenuation: true,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.9
-    });
-
-    this.starfield = new THREE.Points(geometry, material);
-    scene.add(this.starfield);
-  }
-
-  private buildNebula(scene: THREE.Scene): void {
-    // Procedural nebula backdrop
-    const geometry = new THREE.SphereGeometry(2500, 32, 32);
-    const material = new THREE.MeshBasicMaterial({
-      color: 0x1a0a30,
-      side: THREE.BackSide,
-      transparent: true,
-      opacity: 0.6
-    });
-
-    this.nebula = new THREE.Mesh(geometry, material);
-    scene.add(this.nebula);
-  }
-
   private buildPlanets(scene: THREE.Scene): void {
     if (!this.simulation) return;
 
     const planets = this.simulation.getPlanets();
 
     for (const planet of planets) {
-      const group = this.createPlanetMesh(planet);
+      const group = createConquestPlanetMesh(planet);
       scene.add(group);
       this.planetMeshes.push(group);
     }
-  }
-
-  private createPlanetMesh(planet: GalaxyPlanetState): THREE.Group {
-    const group = new THREE.Group();
-    const pos = planet.planetDef.position;
-    const scale = GALAXY_SCALE * 0.18;
-
-    group.position.set(pos[0] * scale, 0, pos[1] * scale);
-    group.userData.planetIndex = planet.planetIndex;
-
-    // Get procedural planet texture
-    const planetTexture = getPlanetTexture(
-      planet.planetDef.style as any,
-      planet.planetDef.id,
-      256
-    );
-
-    // Planet sphere with textured material
-    const planetGeo = new THREE.SphereGeometry(16, 32, 32);
-    const planetMat = new THREE.MeshStandardMaterial({
-      map: planetTexture,
-      emissive: 0xffffff,
-      emissiveMap: planetTexture,
-      emissiveIntensity: 0.8,
-      roughness: 0.8,
-      metalness: 0.1
-    });
-    const planetMesh = new THREE.Mesh(planetGeo, planetMat);
-    planetMesh.name = "planet";
-    group.add(planetMesh);
-
-    // Atmosphere glow
-    const atmosGeo = new THREE.SphereGeometry(19, 24, 24);
-    const atmosMat = new THREE.MeshBasicMaterial({
-      color: FACTION_GLOW[planet.controller],
-      transparent: true,
-      opacity: 0.3,
-      blending: THREE.AdditiveBlending,
-      side: THREE.BackSide
-    });
-    const atmosMesh = new THREE.Mesh(atmosGeo, atmosMat);
-    atmosMesh.name = "atmosphere";
-    group.add(atmosMesh);
-
-    // Faction ring indicator
-    const ringGeo = new THREE.RingGeometry(22, 24, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: FACTION_COLORS[planet.controller],
-      transparent: true,
-      opacity: 0.7,
-      side: THREE.DoubleSide
-    });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.name = "factionRing";
-    group.add(ring);
-
-    // Name label (sprite)
-    const label = this.createTextSprite(planet.planetDef.name.toUpperCase());
-    label.position.set(0, 32, 0);
-    group.add(label);
-
-    return group;
-  }
-
-  private createTextSprite(text: string): THREE.Sprite {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 64;
-    const ctx = canvas.getContext("2d")!;
-
-    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.font = "bold 24px Arial";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    const material = new THREE.SpriteMaterial({
-      map: texture,
-      transparent: true
-    });
-    const sprite = new THREE.Sprite(material);
-    sprite.scale.set(50, 12.5, 1);
-    return sprite;
-  }
-
-  private buildSelectionRing(scene: THREE.Scene): void {
-    const geometry = new THREE.RingGeometry(28, 32, 64);
-    const material = new THREE.MeshBasicMaterial({
-      color: 0x00ffff,
-      transparent: true,
-      opacity: 0.8,
-      side: THREE.DoubleSide
-    });
-    this.selectionRing = new THREE.Mesh(geometry, material);
-    this.selectionRing.rotation.x = -Math.PI / 2;
-    this.selectionRing.visible = false;
-    scene.add(this.selectionRing);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Visual Updates
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  private updatePlanetVisuals(): void {
-    if (!this.simulation) return;
-
-    const planets = this.simulation.getPlanets();
-
-    for (let i = 0; i < planets.length; i++) {
-      const planet = planets[i]!;
-      const group = this.planetMeshes[i];
-      if (!group) continue;
-
-      // Update faction colors
-      const atmosMesh = group.getObjectByName("atmosphere") as THREE.Mesh | undefined;
-      if (atmosMesh) {
-        const mat = atmosMesh.material as THREE.MeshBasicMaterial;
-        mat.color.setHex(FACTION_GLOW[planet.controller]);
-        mat.opacity = planet.underAttack ? 0.6 : 0.3;
-      }
-
-      const ring = group.getObjectByName("factionRing") as THREE.Mesh | undefined;
-      if (ring) {
-        const mat = ring.material as THREE.MeshBasicMaterial;
-        mat.color.setHex(FACTION_COLORS[planet.controller]);
-      }
-
-      const planetMesh = group.getObjectByName("planet") as THREE.Mesh | undefined;
-      if (planetMesh) {
-        const mat = planetMesh.material as THREE.MeshStandardMaterial;
-        mat.emissive.setHex(FACTION_COLORS[planet.controller]);
-        mat.emissiveIntensity = planet.underAttack ? 0.4 : 0.15;
-      }
-    }
-  }
-
-  private updateFleetVisuals(scene: THREE.Scene): void {
-    if (!this.simulation) return;
-
-    const fleets = this.simulation.getFleets();
-    const planets = this.simulation.getPlanets();
-    const activeFleetEids = new Set(fleets.map((f) => f.eid));
-
-    // Remove meshes for destroyed fleets
-    for (const [eid, mesh] of this.fleetMeshes) {
-      if (!activeFleetEids.has(eid)) {
-        scene.remove(mesh);
-        disposeObject(mesh);
-        this.fleetMeshes.delete(eid);
-
-        // Also clean up trails
-        const trail = this.hyperspaceTrails.get(eid);
-        if (trail) {
-          scene.remove(trail);
-          trail.geometry.dispose();
-          (trail.material as THREE.Material).dispose();
-          this.hyperspaceTrails.delete(eid);
-        }
-      }
-    }
-
-    for (const fleet of fleets) {
-      let mesh = this.fleetMeshes.get(fleet.eid);
-
-      // Create fleet mesh if needed
-      if (!mesh) {
-        mesh = this.createFleetMesh(fleet);
-        scene.add(mesh);
-        this.fleetMeshes.set(fleet.eid, mesh);
-      }
-
-      // Update position
-      if (fleet.currentPlanetEid >= 0 && fleet.destinationPlanetEid < 0) {
-        // At a planet
-        const planet = planets.find((p) => p.eid === fleet.currentPlanetEid);
-        if (planet) {
-          const pos = planet.planetDef.position;
-          const scale = GALAXY_SCALE * 0.18;
-          mesh.position.set(pos[0] * scale + 30, 15, pos[1] * scale);
-        }
-        mesh.visible = true;
-
-        // Remove hyperspace trail
-        const trail = this.hyperspaceTrails.get(fleet.eid);
-        if (trail) {
-          scene.remove(trail);
-          trail.geometry.dispose();
-          (trail.material as THREE.Material).dispose();
-          this.hyperspaceTrails.delete(fleet.eid);
-        }
-      } else if (fleet.destinationPlanetEid >= 0) {
-        // In hyperspace
-        const srcPlanet = planets.find((p) => p.eid === fleet.currentPlanetEid);
-        const destPlanet = planets.find((p) => p.eid === fleet.destinationPlanetEid);
-
-        if (srcPlanet && destPlanet) {
-          const scale = GALAXY_SCALE * 0.18;
-          const srcPos = new THREE.Vector3(
-            srcPlanet.planetDef.position[0] * scale,
-            15,
-            srcPlanet.planetDef.position[1] * scale
-          );
-          const destPos = new THREE.Vector3(
-            destPlanet.planetDef.position[0] * scale,
-            15,
-            destPlanet.planetDef.position[1] * scale
-          );
-
-          // Interpolate position
-          const t = fleet.movementProgress;
-          mesh.position.lerpVectors(srcPos, destPos, t);
-
-          // Update or create hyperspace trail
-          this.updateHyperspaceTrail(scene, fleet.eid, srcPos, mesh.position, fleet.faction);
-        }
-        mesh.visible = true;
-      }
-
-      // Update fleet color
-      const fleetMat = (mesh.children[0] as THREE.Mesh)?.material as THREE.MeshBasicMaterial | undefined;
-      if (fleetMat) {
-        fleetMat.color.setHex(FACTION_COLORS[fleet.faction]);
-      }
-    }
-  }
-
-  private createFleetMesh(fleet: GalaxyFleetState): THREE.Group {
-    const group = new THREE.Group();
-
-    // Use faction-appropriate ship models for visual variety
-    const isRebel = fleet.faction === CONQUEST_FACTION.REBEL;
-
-    // Create a small representative ship (scales down for strategic view)
-    if (fleet.capitalShips > 0) {
-      // Capital fleet - show a mini star destroyer or nebulon-b
-      const capShip = createProceduralShip({
-        type: isRebel ? "nebulon_b" : "star_destroyer",
-        scale: 0.15, // Very small for strategic map
-        enableShadows: false
-      });
-      capShip.position.y = 8;
-      group.add(capShip);
-    } else {
-      // Fighter fleet - show mini fighters
-      const fighterType = isRebel ? "xwing" : "tie_ln";
-      for (let i = 0; i < Math.min(fleet.fighterSquadrons, 3); i++) {
-        const fighter = createProceduralShip({
-          type: fighterType,
-          scale: 0.3,
-          enableShadows: false
-        });
-        fighter.position.set((i - 1) * 6, 8, 0);
-        fighter.rotation.x = Math.PI / 6; // Angle upward slightly
-        group.add(fighter);
-      }
-    }
-
-    // Glow effect underneath to show faction and make visible from far
-    const glowGeo = new THREE.CircleGeometry(12, 16);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: FACTION_GLOW[fleet.faction],
-      transparent: true,
-      opacity: 0.4,
-      blending: THREE.AdditiveBlending
-    });
-    const glow = new THREE.Mesh(glowGeo, glowMat);
-    glow.rotation.x = -Math.PI / 2;
-    glow.position.y = 2;
-    group.add(glow);
-
-    return group;
-  }
-
-  private updateHyperspaceTrail(
-    scene: THREE.Scene,
-    fleetEid: number,
-    start: THREE.Vector3,
-    current: THREE.Vector3,
-    faction: number
-  ): void {
-    let trail = this.hyperspaceTrails.get(fleetEid);
-
-    if (!trail) {
-      // Create geometry with pre-allocated buffer (reused across frames)
-      const positions = new Float32Array(6); // 2 points x 3 components
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-
-      const material = new THREE.LineBasicMaterial({
-        color: FACTION_COLORS[faction as keyof typeof FACTION_COLORS],
-        transparent: true,
-        opacity: 0.6
-      });
-      trail = new THREE.Line(geometry, material);
-      scene.add(trail);
-      this.hyperspaceTrails.set(fleetEid, trail);
-    }
-
-    // Update existing buffer in-place (no new allocations)
-    const posAttr = trail.geometry.attributes.position as THREE.BufferAttribute;
-    const arr = posAttr.array as Float32Array;
-    arr[0] = start.x;
-    arr[1] = start.y;
-    arr[2] = start.z;
-    arr[3] = current.x;
-    arr[4] = current.y;
-    arr[5] = current.z;
-    posAttr.needsUpdate = true;
-  }
-
-  private updateBattleIndicators(scene: THREE.Scene, _dt: number): void {
-    if (!this.simulation) return;
-
-    const planets = this.simulation.getPlanets();
-
-    for (const planet of planets) {
-      if (planet.underAttack) {
-        let indicator = this.battleIndicators.get(planet.eid);
-
-        if (!indicator) {
-          indicator = this.createBattleIndicator();
-          scene.add(indicator);
-          this.battleIndicators.set(planet.eid, indicator);
-        }
-
-        // Position at planet
-        const pos = planet.planetDef.position;
-        const scale = GALAXY_SCALE * 0.18;
-        indicator.position.set(pos[0] * scale, 40, pos[1] * scale);
-        indicator.visible = true;
-
-        // Pulse animation
-        const pulseScale = 1 + Math.sin(Date.now() * 0.005) * 0.2;
-        indicator.scale.setScalar(pulseScale);
-      } else {
-        const indicator = this.battleIndicators.get(planet.eid);
-        if (indicator) {
-          indicator.visible = false;
-        }
-      }
-    }
-  }
-
-  private createBattleIndicator(): THREE.Object3D {
-    const group = new THREE.Group();
-
-    // Crossed swords icon (simplified as X)
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xff4444,
-      transparent: true,
-      opacity: 0.9
-    });
-
-    const bar1 = new THREE.Mesh(new THREE.BoxGeometry(20, 2, 2), mat);
-    bar1.rotation.z = Math.PI / 4;
-    group.add(bar1);
-
-    const bar2 = new THREE.Mesh(new THREE.BoxGeometry(20, 2, 2), mat);
-    bar2.rotation.z = -Math.PI / 4;
-    group.add(bar2);
-
-    // Glow ring
-    const ringGeo = new THREE.RingGeometry(12, 15, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xff0000,
-      transparent: true,
-      opacity: 0.5,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide
-    });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    group.add(ring);
-
-    return group;
-  }
-
-  private updateSelectionRing(): void {
-    if (!this.selectionRing || this.selectedPlanetIndex < 0) {
-      if (this.selectionRing) this.selectionRing.visible = false;
-      return;
-    }
-
-    const group = this.planetMeshes[this.selectedPlanetIndex];
-    if (!group) return;
-
-    this.selectionRing.position.copy(group.position);
-    this.selectionRing.position.y = 1;
-    this.selectionRing.visible = true;
-
-    // Animate rotation
-    this.selectionRing.rotation.z += 0.01;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -817,47 +346,15 @@ export class ConquestMode implements ModeHandler {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Build the HUD text (separate from DOM update for change detection)
-   */
-  private buildHudText(): string {
-    if (!this.simulation) return "";
-
-    const overview = this.simulation.getOverview();
-    const phaseName = this.getPhaseName(overview.phase);
-    const speedStr = this.paused ? "PAUSED" : `${this.gameSpeed.toFixed(1)}x`;
-
-    let hudText =
-      `GALACTIC CONQUEST - ${phaseName}\n` +
-      `Time: ${Math.floor(overview.gameTime)}s | Speed: ${speedStr}\n\n` +
-      `REBEL ALLIANCE: ${overview.rebelPlanets} planets | ${Math.floor(overview.rebelCredits)} credits\n` +
-      `GALACTIC EMPIRE: ${overview.empirePlanets} planets | ${Math.floor(overview.empireCredits)} credits\n` +
-      `Neutral: ${overview.neutralPlanets} planets\n\n`;
-
-    if (this.selectedPlanetIndex >= 0) {
-      const planet = this.simulation.getPlanetByIndex(this.selectedPlanetIndex);
-      if (planet) {
-        const factionName = this.getFactionName(planet.controller);
-        hudText +=
-          `Selected: ${planet.planetDef.name.toUpperCase()}\n` +
-          `Controller: ${factionName}\n` +
-          `Garrison: ${Math.floor(planet.garrison)}\n` +
-          `Resources: ${Math.floor(planet.resources)}\n` +
-          `${planet.underAttack ? ">>> UNDER ATTACK <<<" : ""}\n` +
-          `Press ENTER to enter system\n`;
-      }
-    } else {
-      hudText += `Click a planet to select\nB for Battle of Coruscant\n`;
-    }
-
-    hudText += `\nESC: Return to map | SPACE: Pause | +/-: Speed`;
-    return hudText;
-  }
-
-  /**
    * Update HUD only if content has changed (avoid DOM thrashing)
    */
   private updateHudIfChanged(ctx: ModeContext): void {
-    const hudText = this.buildHudText();
+    const hudText = buildConquestHudText(
+      this.simulation,
+      this.selectedPlanetIndex,
+      this.gameSpeed,
+      this.paused
+    );
     if (hudText !== this.lastHudState) {
       this.lastHudState = hudText;
       ctx.hud.className = "hud-conquest";
@@ -871,31 +368,5 @@ export class ConquestMode implements ModeHandler {
   private updateHud(ctx: ModeContext): void {
     this.lastHudState = ""; // Force update
     this.updateHudIfChanged(ctx);
-  }
-
-  private getPhaseName(phase: number): string {
-    switch (phase) {
-      case CONQUEST_PHASE.SETUP:
-        return "SETUP";
-      case CONQUEST_PHASE.PLAYING:
-        return "IN PROGRESS";
-      case CONQUEST_PHASE.REBEL_VICTORY:
-        return "REBEL VICTORY!";
-      case CONQUEST_PHASE.EMPIRE_VICTORY:
-        return "EMPIRE VICTORY!";
-      default:
-        return "UNKNOWN";
-    }
-  }
-
-  private getFactionName(faction: number): string {
-    switch (faction) {
-      case CONQUEST_FACTION.REBEL:
-        return "Rebel Alliance";
-      case CONQUEST_FACTION.EMPIRE:
-        return "Galactic Empire";
-      default:
-        return "Neutral";
-    }
   }
 }

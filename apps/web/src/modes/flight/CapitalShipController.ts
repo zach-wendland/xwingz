@@ -91,6 +91,11 @@ export class CapitalShipController {
     // Create mesh using centralized ship model system
     const mesh = createProceduralShip({ type: "star_destroyer", scale: 5.0, enableShadows: true });
     mesh.position.set(x, y, z);
+    // FIX: Disable frustum culling for capital ships (they're so large they get incorrectly culled)
+    mesh.frustumCulled = false;
+    mesh.traverse((child) => {
+      child.frustumCulled = false;
+    });
     ctx.scene.add(mesh);
     this.capitalShipMeshes.set(result.shipEid, mesh);
     this.capitalShipEids.push(result.shipEid);

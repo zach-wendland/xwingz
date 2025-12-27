@@ -49,6 +49,7 @@ import type { ModeHandler, ModeContext, ModeTransitionData, FlightScenario } fro
 import { isFlightTransition } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
 import { ExplosionManager } from "../rendering/effects";
+import { setupEnhancedSpaceLighting } from "../rendering/shared";
 import {
   type FlightHudElements,
   clamp
@@ -332,8 +333,19 @@ export class FlightMode implements ModeHandler {
     this.explosions?.dispose();
     this.explosions = null;
 
+    // CRITICAL FIX: Clear flight HUD DOM elements before setting to null
+    if (this.flightHud) {
+      Object.values(this.flightHud).forEach(el => {
+        if (el && el.parentNode) el.remove();
+      });
+    }
+
     // Reset HUD
     this.flightHud = null;
+
+    // CRITICAL FIX: Clear base HUD text and className
+    ctx.hud.innerText = "";
+    ctx.hud.className = "";
 
     // Reset state
     this.camInit = false;
@@ -410,21 +422,13 @@ export class FlightMode implements ModeHandler {
   // ───────────────────────────────────────────────────────────────────────────
 
   private setupLighting(ctx: ModeContext): void {
-    ctx.scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-
-    const sun = new THREE.DirectionalLight(0xffffff, 1.1);
-    sun.position.set(200, 400, 150);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.near = 10;
-    sun.shadow.camera.far = 9000;
-    sun.shadow.camera.left = -2400;
-    sun.shadow.camera.right = 2400;
-    sun.shadow.camera.top = 2400;
-    sun.shadow.camera.bottom = -2400;
-    ctx.scene.add(sun);
-
-    ctx.scene.add(new THREE.PointLight(0x88aaff, 0.6, 0, 2));
+    // FIX: Use enhanced lighting from Conquest Mode (much brighter)
+    setupEnhancedSpaceLighting(ctx.scene, {
+      ambient: 2.0,  // Much brighter than old 0.9
+      sun: 1.2,
+      fill: 0.5,
+      glow: 0.8
+    });
   }
 
   // ───────────────────────────────────────────────────────────────────────────

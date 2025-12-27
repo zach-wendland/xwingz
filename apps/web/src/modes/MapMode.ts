@@ -8,6 +8,7 @@ import { PLANETS, planetToSystem, type PlanetDef } from "@xwingz/data";
 import { getPlanetTexture, clearPlanetTextureCache } from "@xwingz/render";
 import type { ModeHandler, ModeContext } from "./types";
 import { disposeObject } from "../rendering/MeshManager";
+import { setupEnhancedSpaceLighting, buildEnhancedStarfield, buildNebulaBackdrop, NebulaColors } from "../rendering/shared";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -42,6 +43,7 @@ export class MapMode implements ModeHandler {
   // Three.js objects - individual planet groups (like ConquestMode)
   private planetGroups: THREE.Group[] = [];
   private mapStarfield: THREE.Points | null = null;
+  private nebula: THREE.Mesh | null = null;
   private selectedMarker: THREE.Mesh | null = null;
 
   // Selection state
@@ -63,21 +65,16 @@ export class MapMode implements ModeHandler {
   enter(ctx: ModeContext): void {
     ctx.controls.enabled = true;
 
-    // Setup scene lighting
+    // Setup scene
     ctx.scene.clear();
-    ctx.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 
-    const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-    sun.position.set(350, 620, 280);
-    ctx.scene.add(sun);
-
-    const fillLight = new THREE.DirectionalLight(0x8888ff, 0.6);
-    fillLight.position.set(-300, -200, -400);
-    ctx.scene.add(fillLight);
-
-    const centerGlow = new THREE.PointLight(0xffffcc, 0.5, 800, 1.5);
-    centerGlow.position.set(0, 50, 0);
-    ctx.scene.add(centerGlow);
+    // FIX: Use enhanced lighting from Conquest Mode (much brighter)
+    setupEnhancedSpaceLighting(ctx.scene, {
+      ambient: 2.0,  // Much brighter than old 0.8
+      sun: 1.4,
+      fill: 0.6,
+      glow: 0.8
+    });
 
     ctx.camera.position.set(0, 200, 600);
 
@@ -95,6 +92,10 @@ export class MapMode implements ModeHandler {
 
   exit(ctx: ModeContext): void {
     this.detachInputHandlers();
+
+    // CRITICAL FIX: Clear HUD text and className to prevent persistence
+    ctx.hud.innerText = "";
+    ctx.hud.className = "";
 
     // Cleanup planet groups (including sprite textures)
     for (const group of this.planetGroups) {
@@ -115,6 +116,13 @@ export class MapMode implements ModeHandler {
       this.mapStarfield.geometry.dispose();
       (this.mapStarfield.material as THREE.Material).dispose();
       this.mapStarfield = null;
+    }
+
+    // Cleanup nebula
+    if (this.nebula) {
+      ctx.scene.remove(this.nebula);
+      disposeObject(this.nebula);
+      this.nebula = null;
     }
 
     // Cleanup selection marker
@@ -139,37 +147,24 @@ export class MapMode implements ModeHandler {
       this.planetGroups.push(group);
     }
 
-    // Backdrop starfield
-    const starRng = createRng(deriveSeed(GLOBAL_SEED, "map_starfield_v0"));
-    const count = 4000;
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const r = 3000 + starRng.range(0, 12000);
-      const theta = starRng.range(0, Math.PI * 2);
-      const phi = Math.acos(starRng.range(-1, 1));
-      positions[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = r * Math.cos(phi);
-
-      // Color variation - blue/white stars
-      const brightness = 0.6 + starRng.range(0, 0.4);
-      colors[i * 3 + 0] = brightness * (0.8 + starRng.range(0, 0.2));
-      colors[i * 3 + 1] = brightness * (0.85 + starRng.range(0, 0.15));
-      colors[i * 3 + 2] = brightness;
-    }
-    const starGeo = new THREE.BufferGeometry();
-    starGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    starGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    const starMat = new THREE.PointsMaterial({
-      size: 2.5,
-      sizeAttenuation: true,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.9
+    // FIX: Use enhanced starfield from Conquest Mode
+    const seed = Number(deriveSeed(GLOBAL_SEED, "map_starfield_v1") & BigInt(0xFFFFFFFF));
+    this.mapStarfield = buildEnhancedStarfield(seed, {
+      count: 4000,
+      minRadius: 3000,
+      maxRadius: 15000,
+      opacity: 0.9,
+      size: 2.5
     });
-    this.mapStarfield = new THREE.Points(starGeo, starMat);
     ctx.scene.add(this.mapStarfield);
+
+    // FIX: Add nebula backdrop from Conquest Mode
+    this.nebula = buildNebulaBackdrop({
+      radius: 2500,
+      color: NebulaColors.DARK_BLUE,
+      opacity: 0.4  // Subtle for map view
+    });
+    ctx.scene.add(this.nebula);
 
     // Selection marker (ring style like ConquestMode)
     if (!this.selectedMarker) {
@@ -300,7 +295,7 @@ export class MapMode implements ModeHandler {
         `Credits: ${ctx.profile.credits} | Tier: ${ctx.profile.missionTier}\n` +
         `Planets: 10 iconic Star Wars locations\n` +
         `Click planet to select | Enter to fly\n` +
-        `1 Yavin | 2/G Ground | 3/C Conquest | 4 Star Destroyer | U upgrades`;
+        `1 Yavin | 2/G Ground | 4 Star Destroyer | U upgrades`;
     } else {
       const preview = getMission(sys, ctx.profile.missionTier);
       const planetName = planetDef?.name ?? sys.id;
@@ -328,10 +323,6 @@ export class MapMode implements ModeHandler {
         case "2":
         case "g":
           ctx.requestModeChange("ground", { type: "ground" });
-          break;
-        case "3":
-        case "c":
-          ctx.requestModeChange("conquest", { type: "conquest" });
           break;
         case "4": {
           const coruscant = PLANETS.find(p => p.id === "coruscant");

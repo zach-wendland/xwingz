@@ -169,9 +169,16 @@ export class GroundMode implements ModeHandler {
 
     // Setup scene
     ctx.scene.clear();
-    ctx.scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    // FIX: Add visible sky and fog for visual context
+    ctx.scene.background = new THREE.Color(0xaaccee); // Light blue sky
+    ctx.scene.fog = new THREE.Fog(0xccddff, 100, 500); // Atmospheric fog
+
+    // FIX: Much brighter ambient light (was 0.5, now 1.2)
+    ctx.scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+
+    // FIX: Much brighter sun (was 1.2, now 2.0)
+    const sun = new THREE.DirectionalLight(0xffffff, 2.0);
     sun.position.set(100, 200, 50);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -653,7 +660,10 @@ export class GroundMode implements ModeHandler {
       } else {
         ctx.camera.position.lerp(desiredCamPos, k);
       }
+
+      // FIX: Always look at player and update projection
       ctx.camera.lookAt(targetPos.x, targetPos.y + 1.2, targetPos.z);
+      ctx.camera.updateProjectionMatrix();
     }
 
     // Update explosions
@@ -664,6 +674,10 @@ export class GroundMode implements ModeHandler {
 
   exit(ctx: ModeContext): void {
     ctx.canvas.removeEventListener("click", this.handleCanvasClick);
+
+    // CRITICAL FIX: Clear HUD text and className to prevent persistence
+    ctx.hud.innerText = "";
+    ctx.hud.className = "";
 
     // Call scenario exit for cleanup
     if (this.scenarioHandler) {

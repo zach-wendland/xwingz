@@ -9,7 +9,7 @@ import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js
 import type { SystemDef } from "@xwingz/procgen";
 import type { Profile } from "../state/ProfileManager";
 
-export type Mode = "map" | "flight" | "ground" | "conquest";
+export type Mode = "map" | "flight" | "ground";
 
 /**
  * Shared context passed to all mode handlers
@@ -63,7 +63,6 @@ export type ModeTransitionData =
   | { type: "flight"; system: SystemDef; scenario: FlightScenario }
   | { type: "ground"; scenario?: GroundScenario }
   | { type: "map" }
-  | { type: "conquest" }
   | {
       type: "flight_from_ground";
       system: SystemDef;
@@ -105,7 +104,7 @@ export interface ModeHandler {
 /**
  * Flight mode specific state (passed via data on transition)
  */
-export type FlightScenario = "sandbox" | "yavin_defense" | "conquest" | "destroy_star_destroyer" | "hoth_speeder";
+export type FlightScenario = "sandbox" | "yavin_defense" | "destroy_star_destroyer" | "hoth_speeder";
 
 /**
  * Ground mode specific scenarios
@@ -131,10 +130,6 @@ export function isGroundTransition(data?: ModeTransitionData): data is { type: "
 
 export function isMapTransition(data?: ModeTransitionData): data is { type: "map" } {
   return data?.type === "map";
-}
-
-export function isConquestTransition(data?: ModeTransitionData): data is { type: "conquest" } {
-  return data?.type === "conquest";
 }
 
 /**

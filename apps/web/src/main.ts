@@ -11,9 +11,8 @@ import { PLANETS, planetToSystem } from "@xwingz/data";
 import { deriveSeed, type SystemDef } from "@xwingz/procgen";
 
 import { loadProfile, saveProfile, scheduleSave, type Profile } from "./state/ProfileManager";
-import { MapMode, FlightMode, GroundMode, ConquestMode } from "./modes";
+import { MapMode, FlightMode, GroundMode } from "./modes";
 import type { Mode, ModeHandler, ModeContext, ModeTransitionData } from "./modes";
-import { CONQUEST_FACTION, CONQUEST_PHASE } from "@xwingz/gameplay";
 import { UpgradesOverlay } from "./ui";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -80,8 +79,7 @@ const YAVIN_DEFENSE_SYSTEM: SystemDef = {
 const modeFactories: Record<Mode, () => ModeHandler> = {
   map: () => new MapMode(),
   flight: () => new FlightMode(),
-  ground: () => new GroundMode(),
-  conquest: () => new ConquestMode()
+  ground: () => new GroundMode()
 };
 
 let currentMode: Mode = "map";
@@ -161,10 +159,6 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
       const handler = getCurrentHandler();
       return currentMode === "flight" && handler ? handler as FlightMode : null;
     };
-    const getConquestHandler = (): ConquestMode | null => {
-      const handler = getCurrentHandler();
-      return currentMode === "conquest" && handler ? handler as ConquestMode : null;
-    };
 
     // Read-only game state getters (dev tools only)
     (window as any).__xwingz = {
@@ -194,22 +188,6 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
       get credits() { return profile.credits; },
       // Expose Yavin system for tests
       get yavinSystem() { return YAVIN_DEFENSE_SYSTEM; },
-      // Conquest mode state getters
-      get conquestState() {
-        const conquest = getConquestHandler();
-        return conquest?.simulation?.getOverview() ?? null;
-      },
-      get conquestPlanets() {
-        const conquest = getConquestHandler();
-        return conquest?.simulation?.getPlanets() ?? [];
-      },
-      get conquestFleets() {
-        const conquest = getConquestHandler();
-        return conquest?.simulation?.getFleets() ?? [];
-      },
-      get selectedPlanetIndex() {
-        return getConquestHandler()?.selectedPlanetIndex ?? -1;
-      },
       // Mode transition helpers for tests
       enterFlight(system: SystemDef, scenario: "sandbox" | "yavin_defense" | "destroy_star_destroyer" = "sandbox") {
         requestModeChange("flight", { type: "flight", system, scenario });
@@ -220,9 +198,6 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
       enterGround() {
         requestModeChange("ground", { type: "ground" });
       },
-      enterConquest() {
-        requestModeChange("conquest", { type: "conquest" });
-      },
       // Quick access to Star Destroyer mission
       enterStarDestroyer() {
         const coruscant = PLANETS.find(p => p.id === "coruscant");
@@ -230,10 +205,7 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
           const system = planetToSystem(coruscant);
           requestModeChange("flight", { type: "flight", system, scenario: "destroy_star_destroyer" });
         }
-      },
-      // Conquest test helpers
-      CONQUEST_FACTION,
-      CONQUEST_PHASE
+      }
     };
 
     // Destructive test actions - only with explicit ?e2e=1 param
